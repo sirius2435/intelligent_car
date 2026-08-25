@@ -58,6 +58,17 @@ static line_follow_result_t search_result(line_follow_controller_t *controller,
                                           uint32_t elapsed_ms)
 {
     const line_follow_state_t old_state = controller->state;
+    if (!controller->has_last_error) {
+        controller->state = LINE_FOLLOW_WAITING_LINE;
+        controller->lost_ms = 0;
+        return (line_follow_result_t) {
+            .state = controller->state,
+            .error = 0,
+            .forward = 0,
+            .turn = 0,
+            .state_changed = old_state != controller->state,
+        };
+    }
     controller->lost_ms = add_saturated(controller->lost_ms, elapsed_ms);
     if (controller->lost_ms >= LINE_LOST_STOP_MS) {
         controller->state = LINE_FOLLOW_STOPPED;
@@ -65,13 +76,11 @@ static line_follow_result_t search_result(line_follow_controller_t *controller,
     }
 
     controller->state = LINE_FOLLOW_LOST_SEARCH;
-    const int direction = controller->has_last_error
-                              ? (controller->last_error < 0 ? -1 : 1)
-                              : 0;
+    const int direction = controller->last_error < 0 ? -1 : 1;
     return (line_follow_result_t) {
         .state = controller->state,
-        .error = controller->has_last_error ? controller->last_error : 0,
-        .forward = direction == 0 ? 0 : LINE_SEARCH_FORWARD,
+        .error = controller->last_error,
+        .forward = LINE_SEARCH_FORWARD,
         .turn = direction * LINE_SEARCH_TURN,
         .state_changed = old_state != controller->state,
     };
@@ -83,7 +92,7 @@ void line_follow_init(line_follow_controller_t *controller)
         return;
     }
     *controller = (line_follow_controller_t) {
-        .state = LINE_FOLLOW_TRACKING,
+        .state = LINE_FOLLOW_WAITING_LINE,
     };
 }
 
@@ -160,6 +169,8 @@ line_follow_result_t line_follow_update(line_follow_controller_t *controller,
 const char *line_follow_state_name(line_follow_state_t state)
 {
     switch (state) {
+    case LINE_FOLLOW_WAITING_LINE:
+        return "WAITING_LINE";
     case LINE_FOLLOW_TRACKING:
         return "TRACKING";
     case LINE_FOLLOW_LOST_SEARCH:

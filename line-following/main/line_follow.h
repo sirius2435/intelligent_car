@@ -8,7 +8,8 @@ extern "C" {
 #endif
 
 typedef enum {
-    LINE_FOLLOW_TRACKING = 0,
+    LINE_FOLLOW_WAITING_LINE = 0,
+    LINE_FOLLOW_TRACKING,
     LINE_FOLLOW_LOST_SEARCH,
     LINE_FOLLOW_STOPPED,
 } line_follow_state_t;

@@ -3,8 +3,9 @@ idf_component_register(
         "main.c"
         "infrared_sensor.c"
         "motor.c"
+        "encoder.c"
         "drive.c"
         "line_follow.c"
     INCLUDE_DIRS "."
-    REQUIRES esp_driver_gpio esp_driver_ledc
+    REQUIRES esp_driver_gpio esp_driver_ledc esp_driver_pcnt
 )

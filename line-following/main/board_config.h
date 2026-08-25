@@ -32,8 +32,22 @@
 #define MOTOR_REAR_IN2_GPIO        18
 #define MOTOR_REAR_PWM_GPIO        17
 
-/* The physical switch on the D24A board controls standby. */
+/* D24A/TB6612 standby/enable input. High enables the motor bridges. */
 #define MOTOR_STBY_GPIO           (4)
+
+/* Quadrature Hall encoder inputs copied from the verified wheel-test wiring. */
+#define ENCODER_LEFT_A_GPIO       (40)  /* Motor D: E4A */
+#define ENCODER_LEFT_B_GPIO       (39)  /* Motor D: E4B */
+#define ENCODER_RIGHT_A_GPIO      (15)  /* Motor A: E1A */
+#define ENCODER_RIGHT_B_GPIO      (16)  /* Motor A: E1B */
+#define ENCODER_REAR_A_GPIO        (3)  /* Motor B: E2A */
+#define ENCODER_REAR_B_GPIO       (46)  /* Motor B: E2B */
+
+/* Positive counts correspond to the wheel-test definition of forward. */
+#define ENCODER_LEFT_REVERSED       0
+#define ENCODER_RIGHT_REVERSED      1
+#define ENCODER_REAR_REVERSED       0
+#define ENCODER_GLITCH_FILTER_NS 1000
 
 /* Change a value to 1 if that individual motor runs in the wrong direction. */
 #define MOTOR_LEFT_REVERSED         0

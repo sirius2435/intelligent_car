@@ -28,6 +28,11 @@ static esp_err_t validate_pins(void)
         MOTOR_RIGHT_IN1_GPIO, MOTOR_RIGHT_IN2_GPIO, MOTOR_RIGHT_PWM_GPIO,
         MOTOR_REAR_IN1_GPIO, MOTOR_REAR_IN2_GPIO, MOTOR_REAR_PWM_GPIO,
     };
+    const int encoder_pins[] = {
+        ENCODER_LEFT_A_GPIO, ENCODER_LEFT_B_GPIO,
+        ENCODER_RIGHT_A_GPIO, ENCODER_RIGHT_B_GPIO,
+        ENCODER_REAR_A_GPIO, ENCODER_REAR_B_GPIO,
+    };
 
     for (size_t i = 0; i < 4; ++i) {
         const int gpio = s_gpio_by_bit[i];
@@ -45,6 +50,18 @@ static esp_err_t validate_pins(void)
         for (size_t j = 0; j < sizeof(motor_pins) / sizeof(motor_pins[0]); ++j) {
             if (gpio == motor_pins[j]) {
                 ESP_LOGE(TAG, "Infrared GPIO %d conflicts with a motor signal", gpio);
+                return ESP_ERR_INVALID_ARG;
+            }
+        }
+#if MOTOR_STBY_GPIO >= 0
+        if (gpio == MOTOR_STBY_GPIO) {
+            ESP_LOGE(TAG, "Infrared GPIO %d conflicts with motor STBY", gpio);
+            return ESP_ERR_INVALID_ARG;
+        }
+#endif
+        for (size_t j = 0; j < sizeof(encoder_pins) / sizeof(encoder_pins[0]); ++j) {
+            if (gpio == encoder_pins[j]) {
+                ESP_LOGE(TAG, "Infrared GPIO %d conflicts with an encoder signal", gpio);
                 return ESP_ERR_INVALID_ARG;
             }
         }

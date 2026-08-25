@@ -72,6 +72,19 @@ static esp_err_t validate_pins(void)
             }
         }
     }
+
+#if MOTOR_STBY_GPIO >= 0
+    if (!GPIO_IS_VALID_OUTPUT_GPIO(MOTOR_STBY_GPIO)) {
+        ESP_LOGE(TAG, "STBY GPIO %d is not a valid output", MOTOR_STBY_GPIO);
+        return ESP_ERR_INVALID_ARG;
+    }
+    for (size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); ++i) {
+        if (MOTOR_STBY_GPIO == pins[i]) {
+            ESP_LOGE(TAG, "STBY GPIO %d duplicates a motor signal", MOTOR_STBY_GPIO);
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+#endif
     return ESP_OK;
 }
 
@@ -104,6 +117,10 @@ static esp_err_t set_one(motor_channel_t *motor, int speed)
         motor->last_sign = 0;
         return ESP_OK;
     }
+
+#if MOTOR_STBY_GPIO >= 0
+    gpio_set_level((gpio_num_t)MOTOR_STBY_GPIO, 1);
+#endif
 
     if (requested_sign != motor->last_sign) {
         bool forward = speed > 0;
@@ -142,6 +159,19 @@ esp_err_t motor_init(void)
         gpio_set_level(s_motors[i].in1, 0);
         gpio_set_level(s_motors[i].in2, 0);
     }
+
+#if MOTOR_STBY_GPIO >= 0
+    const gpio_config_t standby_config = {
+        .pin_bit_mask = 1ULL << (unsigned)MOTOR_STBY_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&standby_config), TAG,
+                        "failed to configure motor STBY pin");
+    gpio_set_level((gpio_num_t)MOTOR_STBY_GPIO, 0);
+#endif
 
     const ledc_timer_config_t timer_config = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
@@ -193,5 +223,8 @@ esp_err_t motor_stop_all(void)
             first_error = result;
         }
     }
+#if MOTOR_STBY_GPIO >= 0
+    gpio_set_level((gpio_num_t)MOTOR_STBY_GPIO, 0);
+#endif
     return first_error;
 }

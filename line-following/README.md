@@ -8,7 +8,9 @@
 在 `main/board_config.h` 中填写四路红外传感器 GPIO。安装顺序必须是车体
 左侧到右侧依次为 CH4、CH3、CH2、CH1。传感器检测到黑线时输出低电平。
 
-电机 GPIO 沿用已经验证的映射：左轮 Motor D、右轮 Motor A、后轮 Motor B。
+电机 GPIO、GPIO4 STBY 和三组 EA/EB 沿用 `wheel-test` 的实际配置：
+左轮 Motor D、右轮 Motor A、后轮 Motor B。GPIO4 会在电机运行前拉高，
+停车后拉低。
 首次运行必须架空车轮，确认逻辑前进和左右转向方向。如果单个轮子方向相反，
 修改对应的 `MOTOR_*_REVERSED`，不要在巡线算法中修改符号。
 
@@ -19,6 +21,12 @@
 - 四路全黑：立即暂停，持续 100 ms 后锁定停车。
 - 不连续图案：短时保持最后方向并降速，持续 100 ms 后进入丢线搜索。
 - 上电初始化成功后等待 3 秒才开始运动。
+- 首次尚未看到黑线时保持 `WAITING_LINE`，不会在 1.5 秒后锁死；检测到
+  黑线后才进入正常巡线。
+
+编码器使用 ESP32-S3 PCNT 做三路 x4 正交计数。串口日志中的 `enc` 是累计
+计数，`delta` 是两次日志间的增量，`dt` 是对应时间。当前编码器用于接线、
+方向和轮速观测，尚未参与 PWM 闭环。
 
 停车状态为锁定状态，需要复位开发板才能再次启动。
 
@@ -27,7 +35,7 @@
 在 ESP-IDF 5.4.x PowerShell 环境中执行：
 
 ```powershell
-cd D:\33984\桌面\智能车\line-following
+cd D:\esp-projects\line-following
 idf.py set-target esp32s3
 idf.py build
 idf.py -p COM端口 flash monitor
