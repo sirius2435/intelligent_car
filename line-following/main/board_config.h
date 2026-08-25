@@ -9,10 +9,10 @@
  * Replace all four -1 values with the actual GPIO numbers before building
  * firmware for the car.
  */
-#define IR_CHANNEL_4_GPIO  (-1)
-#define IR_CHANNEL_3_GPIO  (-1)
-#define IR_CHANNEL_2_GPIO  (-1)
-#define IR_CHANNEL_1_GPIO  (-1)
+#define IR_CHANNEL_4_GPIO  (9)
+#define IR_CHANNEL_3_GPIO  (10)
+#define IR_CHANNEL_2_GPIO  (11)
+#define IR_CHANNEL_1_GPIO  (12)
 
 /* LQ_R4CHVB outputs low while its sensor is over a black line. */
 #define IR_BLACK_LEVEL              0
