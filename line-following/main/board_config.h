@@ -20,20 +20,20 @@
 #define IR_DEBOUNCE_SAMPLE_COUNT    2
 
 /* D24A/TB6612FNG motor outputs verified by the wheel-test project. */
-#define MOTOR_LEFT_IN1_GPIO        42
-#define MOTOR_LEFT_IN2_GPIO         2
-#define MOTOR_LEFT_PWM_GPIO         1
+#define MOTOR_LEFT_IN1_GPIO        41
+#define MOTOR_LEFT_IN2_GPIO        42
+#define MOTOR_LEFT_PWM_GPIO         2
 
-#define MOTOR_RIGHT_IN1_GPIO       11
-#define MOTOR_RIGHT_IN2_GPIO       10
-#define MOTOR_RIGHT_PWM_GPIO        9
+#define MOTOR_RIGHT_IN1_GPIO       7
+#define MOTOR_RIGHT_IN2_GPIO       6
+#define MOTOR_RIGHT_PWM_GPIO       5
 
-#define MOTOR_REAR_IN1_GPIO        17
-#define MOTOR_REAR_IN2_GPIO        16
-#define MOTOR_REAR_PWM_GPIO        15
+#define MOTOR_REAR_IN1_GPIO        8
+#define MOTOR_REAR_IN2_GPIO        18
+#define MOTOR_REAR_PWM_GPIO        17
 
 /* The physical switch on the D24A board controls standby. */
-#define MOTOR_STBY_GPIO           (-1)
+#define MOTOR_STBY_GPIO           (4)
 
 /* Change a value to 1 if that individual motor runs in the wrong direction. */
 #define MOTOR_LEFT_REVERSED         0
