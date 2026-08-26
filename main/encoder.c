@@ -2,7 +2,7 @@
 
 #include <stddef.h>
 
-#include "board_pins.h"
+#include "board_config.h"
 #include "driver/gpio.h"
 #include "driver/pulse_cnt.h"
 #include "esp_check.h"
@@ -48,69 +48,45 @@ static bool wheel_is_valid(encoder_wheel_t wheel)
     return wheel >= ENCODER_WHEEL_LEFT && wheel < ENCODER_WHEEL_COUNT;
 }
 
-static esp_err_t validate_pin_configuration(bool *all_unconfigured)
+static esp_err_t validate_pin_configuration(void)
 {
     const int encoder_pins[] = {
-        ENCODER_LEFT_A_GPIO,
-        ENCODER_LEFT_B_GPIO,
-        ENCODER_RIGHT_A_GPIO,
-        ENCODER_RIGHT_B_GPIO,
-        ENCODER_REAR_A_GPIO,
-        ENCODER_REAR_B_GPIO,
+        ENCODER_LEFT_A_GPIO, ENCODER_LEFT_B_GPIO,
+        ENCODER_RIGHT_A_GPIO, ENCODER_RIGHT_B_GPIO,
+        ENCODER_REAR_A_GPIO, ENCODER_REAR_B_GPIO,
     };
-    const int motor_pins[] = {
-        MOTOR_LEFT_IN1_GPIO,
-        MOTOR_LEFT_IN2_GPIO,
-        MOTOR_LEFT_PWM_GPIO,
-        MOTOR_RIGHT_IN1_GPIO,
-        MOTOR_RIGHT_IN2_GPIO,
-        MOTOR_RIGHT_PWM_GPIO,
-        MOTOR_REAR_IN1_GPIO,
-        MOTOR_REAR_IN2_GPIO,
-        MOTOR_REAR_PWM_GPIO,
+    const int reserved_pins[] = {
+        MOTOR_LEFT_IN1_GPIO, MOTOR_LEFT_IN2_GPIO, MOTOR_LEFT_PWM_GPIO,
+        MOTOR_RIGHT_IN1_GPIO, MOTOR_RIGHT_IN2_GPIO, MOTOR_RIGHT_PWM_GPIO,
+        MOTOR_REAR_IN1_GPIO, MOTOR_REAR_IN2_GPIO, MOTOR_REAR_PWM_GPIO,
+        IR_CHANNEL_1_GPIO, IR_CHANNEL_2_GPIO,
+        IR_CHANNEL_3_GPIO, IR_CHANNEL_4_GPIO,
     };
-
-    size_t configured_count = 0;
-    for (size_t i = 0; i < sizeof(encoder_pins) / sizeof(encoder_pins[0]); ++i) {
-        if (encoder_pins[i] >= 0) {
-            ++configured_count;
-        }
-    }
-
-    *all_unconfigured = configured_count == 0;
-    if (*all_unconfigured) {
-        return ESP_OK;
-    }
-    if (configured_count != sizeof(encoder_pins) / sizeof(encoder_pins[0])) {
-        ESP_LOGE(TAG, "Encoder GPIO configuration is incomplete; fill all six pins or leave all at -1");
-        return ESP_ERR_INVALID_ARG;
-    }
 
     for (size_t i = 0; i < sizeof(encoder_pins) / sizeof(encoder_pins[0]); ++i) {
         if (!GPIO_IS_VALID_GPIO(encoder_pins[i])) {
-            ESP_LOGE(TAG, "Encoder GPIO %d is not a valid ESP32-S3 input", encoder_pins[i]);
+            ESP_LOGE(TAG, "Encoder GPIO %d is not a valid input", encoder_pins[i]);
             return ESP_ERR_INVALID_ARG;
         }
         for (size_t j = i + 1; j < sizeof(encoder_pins) / sizeof(encoder_pins[0]); ++j) {
             if (encoder_pins[i] == encoder_pins[j]) {
-                ESP_LOGE(TAG, "GPIO %d is assigned to more than one encoder signal", encoder_pins[i]);
+                ESP_LOGE(TAG, "Encoder GPIO %d is assigned more than once", encoder_pins[i]);
                 return ESP_ERR_INVALID_ARG;
             }
         }
-        for (size_t j = 0; j < sizeof(motor_pins) / sizeof(motor_pins[0]); ++j) {
-            if (encoder_pins[i] == motor_pins[j]) {
-                ESP_LOGE(TAG, "Encoder GPIO %d duplicates a motor output signal", encoder_pins[i]);
+        for (size_t j = 0; j < sizeof(reserved_pins) / sizeof(reserved_pins[0]); ++j) {
+            if (encoder_pins[i] == reserved_pins[j]) {
+                ESP_LOGE(TAG, "Encoder GPIO %d conflicts with another signal", encoder_pins[i]);
                 return ESP_ERR_INVALID_ARG;
             }
         }
 #if MOTOR_STBY_GPIO >= 0
         if (encoder_pins[i] == MOTOR_STBY_GPIO) {
-            ESP_LOGE(TAG, "Encoder GPIO %d duplicates the STBY signal", encoder_pins[i]);
+            ESP_LOGE(TAG, "Encoder GPIO %d conflicts with motor STBY", encoder_pins[i]);
             return ESP_ERR_INVALID_ARG;
         }
 #endif
     }
-
     return ESP_OK;
 }
 
@@ -148,25 +124,24 @@ static esp_err_t configure_one_encoder(encoder_channel_t *encoder)
     ESP_RETURN_ON_ERROR(
         pcnt_channel_set_edge_action(channel_a, PCNT_CHANNEL_EDGE_ACTION_DECREASE,
                                      PCNT_CHANNEL_EDGE_ACTION_INCREASE),
-        TAG, "failed to configure %s channel A edges", encoder->name);
+        TAG, "failed to configure %s A edges", encoder->name);
     ESP_RETURN_ON_ERROR(
         pcnt_channel_set_level_action(channel_a, PCNT_CHANNEL_LEVEL_ACTION_KEEP,
                                       PCNT_CHANNEL_LEVEL_ACTION_INVERSE),
-        TAG, "failed to configure %s channel A level", encoder->name);
+        TAG, "failed to configure %s A level", encoder->name);
     ESP_RETURN_ON_ERROR(
         pcnt_channel_set_edge_action(channel_b, PCNT_CHANNEL_EDGE_ACTION_INCREASE,
                                      PCNT_CHANNEL_EDGE_ACTION_DECREASE),
-        TAG, "failed to configure %s channel B edges", encoder->name);
+        TAG, "failed to configure %s B edges", encoder->name);
     ESP_RETURN_ON_ERROR(
         pcnt_channel_set_level_action(channel_b, PCNT_CHANNEL_LEVEL_ACTION_KEEP,
                                       PCNT_CHANNEL_LEVEL_ACTION_INVERSE),
-        TAG, "failed to configure %s channel B level", encoder->name);
+        TAG, "failed to configure %s B level", encoder->name);
 
     ESP_RETURN_ON_ERROR(gpio_set_pull_mode((gpio_num_t)encoder->gpio_a, GPIO_PULLUP_ONLY), TAG,
-                        "failed to enable %s channel A pull-up", encoder->name);
+                        "failed to enable %s A pull-up", encoder->name);
     ESP_RETURN_ON_ERROR(gpio_set_pull_mode((gpio_num_t)encoder->gpio_b, GPIO_PULLUP_ONLY), TAG,
-                        "failed to enable %s channel B pull-up", encoder->name);
-
+                        "failed to enable %s B pull-up", encoder->name);
     ESP_RETURN_ON_ERROR(pcnt_unit_add_watch_point(encoder->unit, ENCODER_PCNT_HIGH_LIMIT), TAG,
                         "failed to add %s high limit", encoder->name);
     ESP_RETURN_ON_ERROR(pcnt_unit_add_watch_point(encoder->unit, ENCODER_PCNT_LOW_LIMIT), TAG,
@@ -183,20 +158,12 @@ esp_err_t encoder_init(void)
     if (s_enabled) {
         return ESP_OK;
     }
-
-    bool all_unconfigured = false;
-    ESP_RETURN_ON_ERROR(validate_pin_configuration(&all_unconfigured), TAG,
+    ESP_RETURN_ON_ERROR(validate_pin_configuration(), TAG,
                         "unsafe encoder pin configuration");
-    if (all_unconfigured) {
-        ESP_LOGW(TAG, "Encoder GPIOs are still -1; continuing with open-loop motor test");
-        return ESP_OK;
-    }
-
     for (size_t i = 0; i < ENCODER_WHEEL_COUNT; ++i) {
         ESP_RETURN_ON_ERROR(configure_one_encoder(&s_encoders[i]), TAG,
-                            "failed to initialize %s encoder", s_encoders[i].name);
+                            "failed to initialize %s", s_encoders[i].name);
     }
-
     s_enabled = true;
     ESP_LOGI(TAG, "Three x4 quadrature encoders initialized");
     return ESP_OK;
@@ -215,9 +182,8 @@ esp_err_t encoder_get_count(encoder_wheel_t wheel, int *count)
     if (!wheel_is_valid(wheel) || count == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-
     ESP_RETURN_ON_ERROR(pcnt_unit_get_count(s_encoders[wheel].unit, count), TAG,
-                        "failed to read %s counter", s_encoders[wheel].name);
+                        "failed to read %s", s_encoders[wheel].name);
     if (s_encoders[wheel].reversed) {
         *count = -*count;
     }
@@ -254,7 +220,7 @@ esp_err_t encoder_clear_all(void)
     }
     for (size_t i = 0; i < ENCODER_WHEEL_COUNT; ++i) {
         ESP_RETURN_ON_ERROR(pcnt_unit_clear_count(s_encoders[i].unit), TAG,
-                            "failed to clear %s counter", s_encoders[i].name);
+                            "failed to clear encoder counter");
     }
     return ESP_OK;
 }
