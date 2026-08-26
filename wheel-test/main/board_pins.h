@@ -34,7 +34,7 @@
 
 /* Set to 1 if a forward-running wheel produces a negative encoder count. */
 #define ENCODER_LEFT_REVERSED   0
-#define ENCODER_RIGHT_REVERSED  1
+#define ENCODER_RIGHT_REVERSED  0
 #define ENCODER_REAR_REVERSED   0
 
 /* Reject encoder input pulses shorter than this duration. */
@@ -48,11 +48,14 @@
 
 /* Set to 1 if a wheel runs backward when commanded forward. */
 #define MOTOR_LEFT_REVERSED    0
-#define MOTOR_RIGHT_REVERSED   0
+#define MOTOR_RIGHT_REVERSED   1
 #define MOTOR_REAR_REVERSED    0
 
 /* Conservative bench-test settings. Speed is in permille (0..1000). */
 #define MOTOR_TEST_SPEED       200
+#define NEG_MOTOR_TEST_SPEED   -200
+#define NULL_MOTOR_TEST_SPEED  0
+
 #define MOTOR_TEST_RUN_MS      2000
 #define MOTOR_TEST_PAUSE_MS    1000
 #define MOTOR_TEST_START_MS    3000

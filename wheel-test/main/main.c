@@ -48,18 +48,18 @@ void app_main(void)
 
     vTaskDelay(pdMS_TO_TICKS(MOTOR_TEST_START_MS));
 
-    ESP_LOGI(TAG, "Test 1/3: left wheel (motor D) forward at %d/1000", MOTOR_TEST_SPEED);
+    ESP_LOGI(TAG, "Both wheels forward at %d/1000", MOTOR_TEST_SPEED);
     clear_encoder_if_enabled(ENCODER_WHEEL_LEFT);
-    ESP_ERROR_CHECK(motor_set_left(MOTOR_TEST_SPEED));
-    vTaskDelay(pdMS_TO_TICKS(MOTOR_TEST_RUN_MS));
-    pause_with_motors_stopped();
-    log_encoder_if_enabled("Left/Motor D", ENCODER_WHEEL_LEFT);
-
-    ESP_LOGI(TAG, "Test 2/3: right wheel (motor A) forward at %d/1000", MOTOR_TEST_SPEED);
     clear_encoder_if_enabled(ENCODER_WHEEL_RIGHT);
+
+    ESP_ERROR_CHECK(motor_set_left(NEG_MOTOR_TEST_SPEED));
     ESP_ERROR_CHECK(motor_set_right(MOTOR_TEST_SPEED));
+
     vTaskDelay(pdMS_TO_TICKS(MOTOR_TEST_RUN_MS));
+
     pause_with_motors_stopped();
+
+    log_encoder_if_enabled("Left/Motor D", ENCODER_WHEEL_LEFT);
     log_encoder_if_enabled("Right/Motor A", ENCODER_WHEEL_RIGHT);
 
     ESP_LOGI(TAG, "Test 3/3: rear wheel (motor B) forward at %d/1000", MOTOR_TEST_SPEED);
