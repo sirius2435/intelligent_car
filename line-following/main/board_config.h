@@ -61,17 +61,27 @@
  */
 
 /* Open-loop line-following parameters; all motor commands use -1000..1000. */
-#define LINE_BASE_FORWARD          220
+#define LINE_BASE_FORWARD          160
 #define LINE_MIN_FORWARD           140
-#define LINE_ERROR_SLOWDOWN         25
+#define LINE_ERROR_SLOWDOWN         35
 #define LINE_KP                     70
-#define LINE_KD                     30
+#define LINE_KD                     15
 #define LINE_TURN_LIMIT            250
 
-#define LINE_SEARCH_FORWARD         80
-#define LINE_SEARCH_TURN           180
+#define LINE_CORNER_ARM_MS              30
+#define LINE_CORNER_CONFIRM_WINDOW_MS  120
+#define LINE_CORNER_APPROACH_FORWARD   120
+#define LINE_CORNER_ROTATE_FORWARD       0
+#define LINE_CORNER_ROTATE_TURN         250
+#define LINE_CORNER_MIN_ROTATE_MS        60
+#define LINE_CORNER_CENTERED_MS          30
+#define LINE_CORNER_MAX_ROTATE_MS       600
+#define LINE_CORNER_EXIT_MS              50
+
+#define LINE_SEARCH_FORWARD         60
+#define LINE_SEARCH_TURN           230
 #define LINE_LOST_STOP_MS         1500
-#define LINE_ALL_BLACK_STOP_MS     100
+#define LINE_ALL_BLACK_STOP_MS      40
 #define LINE_INVALID_GRACE_MS      100
 #define LINE_START_DELAY_MS       3000
 #define LINE_LOG_PERIOD_MS         100

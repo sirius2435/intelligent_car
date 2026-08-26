@@ -10,6 +10,9 @@ extern "C" {
 typedef enum {
     LINE_FOLLOW_WAITING_LINE = 0,
     LINE_FOLLOW_TRACKING,
+    LINE_FOLLOW_CORNER_CANDIDATE,
+    LINE_FOLLOW_CORNER_ROTATE,
+    LINE_FOLLOW_CORNER_EXIT,
     LINE_FOLLOW_LOST_SEARCH,
     LINE_FOLLOW_STOPPED,
 } line_follow_state_t;
@@ -31,6 +34,13 @@ typedef struct {
     uint32_t invalid_ms;
     int last_direction;
     bool last_cycle_tracking;
+    int corner_direction;
+    uint32_t corner_arm_ms;
+    uint32_t corner_candidate_ms;
+    uint32_t corner_rotate_ms;
+    uint32_t corner_centered_ms;
+    uint32_t corner_exit_ms;
+    bool corner_rearm_ready;
 } line_follow_controller_t;
 
 void line_follow_init(line_follow_controller_t *controller);

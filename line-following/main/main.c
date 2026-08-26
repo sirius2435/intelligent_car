@@ -55,7 +55,9 @@ void app_main(void)
     infrared_sensor_state_t sensor = {0};
     TickType_t wake_time = xTaskGetTickCount();
     TickType_t previous_ticks = wake_time;
-    uint32_t log_elapsed_ms = LINE_LOG_PERIOD_MS;
+    uint32_t log_elapsed_ms = 0;
+    uint32_t max_loop_ms = 0;
+    uint32_t loop_overrun_count = 0;
     int previous_left_count = 0;
     int previous_right_count = 0;
     int previous_rear_count = 0;
@@ -68,6 +70,12 @@ void app_main(void)
         const uint32_t elapsed_ms =
             (uint32_t)((now - previous_ticks) * portTICK_PERIOD_MS);
         previous_ticks = now;
+        if (elapsed_ms > max_loop_ms) {
+            max_loop_ms = elapsed_ms;
+        }
+        if (elapsed_ms > IR_SAMPLE_PERIOD_MS) {
+            ++loop_overrun_count;
+        }
 
         result = infrared_sensor_sample(&sensor);
         if (result != ESP_OK) {
@@ -83,7 +91,9 @@ void app_main(void)
         }
 
         log_elapsed_ms += elapsed_ms;
-        if (control.state_changed || sensor.changed || log_elapsed_ms >= LINE_LOG_PERIOD_MS) {
+        /* Keep UART output strictly periodic. Sensor transitions can occur every
+           control cycle on dense bends and must not trigger extra blocking logs. */
+        if (log_elapsed_ms >= LINE_LOG_PERIOD_MS) {
             int left_count = 0;
             int right_count = 0;
             int rear_count = 0;
@@ -95,18 +105,22 @@ void app_main(void)
             infrared_sensor_format(sensor.black_mask, display);
             ESP_LOGI(TAG,
                      "state=%s sensor=%s error=%d forward=%d turn=%d "
-                     "wheels=[%d,%d,%d] enc=[%d,%d,%d] delta=[%d,%d,%d] dt=%ums",
+                     "wheels=[%d,%d,%d] enc=[%d,%d,%d] delta=[%d,%d,%d] "
+                     "dt=%ums loop_max=%ums overruns=%u",
                      line_follow_state_name(control.state), display, control.error,
                      control.forward, control.turn, wheels.left, wheels.right, wheels.rear,
                      left_count, right_count, rear_count,
                      left_count - previous_left_count,
                      right_count - previous_right_count,
                      rear_count - previous_rear_count,
-                     (unsigned)log_elapsed_ms);
+                     (unsigned)log_elapsed_ms, (unsigned)max_loop_ms,
+                     (unsigned)loop_overrun_count);
             previous_left_count = left_count;
             previous_right_count = right_count;
             previous_rear_count = rear_count;
             log_elapsed_ms = 0;
+            max_loop_ms = 0;
+            loop_overrun_count = 0;
         }
 
         vTaskDelayUntil(&wake_time, pdMS_TO_TICKS(IR_SAMPLE_PERIOD_MS));
