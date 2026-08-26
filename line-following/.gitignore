@@ -1,0 +1,13 @@
+# ESP-IDF build output
+build/
+build_*/
+
+# Component manager generated files
+managed_components/
+
+# SDK config backups
+sdkconfig.old
+
+# IDE / editor config (machine-specific)
+.vscode/
+.clangd
