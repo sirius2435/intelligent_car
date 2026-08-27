@@ -11,6 +11,18 @@
 
 static const char *TAG = "line_following";
 
+/*
+ * Motor-symmetry test hook. Mount the car so both drive wheels spin freely
+ * in the air, set MOTOR_SYMMETRY_TEST to 1, build and flash. The loop then
+ * commands drive_set_motion(MOTOR_SYMMETRY_FORWARD, MOTOR_SYMMETRY_TURN)
+ * every cycle, bypassing line following, while the periodic log still prints
+ * left/right encoder deltas. Compare delta[0] (left) and delta[1] (right):
+ * their magnitudes must be close. Keep this 0 for normal line following.
+ */
+#define MOTOR_SYMMETRY_TEST       0
+#define MOTOR_SYMMETRY_FORWARD  160
+#define MOTOR_SYMMETRY_TURN       0
+
 static void stop_after_runtime_error(const char *operation, esp_err_t result)
 {
     ESP_LOGE(TAG, "%s failed: %s", operation, esp_err_to_name(result));
@@ -82,9 +94,28 @@ void app_main(void)
             stop_after_runtime_error("infrared_sensor_sample", result);
         }
 
-        const line_follow_result_t control =
-            line_follow_update(&controller, sensor.black_mask, elapsed_ms);
+        int left_count = 0;
+        int right_count = 0;
+        int rear_count = 0;
+        result = encoder_get_all(&left_count, &right_count, &rear_count);
+        if (result != ESP_OK) {
+            stop_after_runtime_error("encoder_get_all", result);
+        }
+
         drive_wheel_command_t wheels = {0};
+#if MOTOR_SYMMETRY_TEST
+        const line_follow_result_t control = {
+            .state = LINE_FOLLOW_TRACKING,
+            .error = 0,
+            .forward = MOTOR_SYMMETRY_FORWARD,
+            .turn = MOTOR_SYMMETRY_TURN,
+            .state_changed = false,
+        };
+#else
+        const line_follow_result_t control =
+            line_follow_update(&controller, sensor.black_mask, elapsed_ms,
+                               left_count, right_count);
+#endif
         result = drive_set_motion(control.forward, control.turn, &wheels);
         if (result != ESP_OK) {
             stop_after_runtime_error("drive_set_motion", result);
@@ -94,18 +125,12 @@ void app_main(void)
         /* Keep UART output strictly periodic. Sensor transitions can occur every
            control cycle on dense bends and must not trigger extra blocking logs. */
         if (log_elapsed_ms >= LINE_LOG_PERIOD_MS) {
-            int left_count = 0;
-            int right_count = 0;
-            int rear_count = 0;
-            result = encoder_get_all(&left_count, &right_count, &rear_count);
-            if (result != ESP_OK) {
-                stop_after_runtime_error("encoder_get_all", result);
-            }
             char display[5];
             infrared_sensor_format(sensor.black_mask, display);
             ESP_LOGI(TAG,
                      "state=%s sensor=%s error=%d forward=%d turn=%d "
                      "wheels=[%d,%d,%d] enc=[%d,%d,%d] delta=[%d,%d,%d] "
+                     "search=[leg=%u dir=%d phase=%s progress=%lld/%lld] "
                      "dt=%ums loop_max=%ums overruns=%u",
                      line_follow_state_name(control.state), display, control.error,
                      control.forward, control.turn, wheels.left, wheels.right, wheels.rear,
@@ -113,6 +138,12 @@ void app_main(void)
                      left_count - previous_left_count,
                      right_count - previous_right_count,
                      rear_count - previous_rear_count,
+                     controller.search_phase == LINE_SEARCH_IDLE ?
+                         0U : controller.search_leg + 1U,
+                     controller.search_direction,
+                     line_follow_search_phase_name(controller.search_phase),
+                     (long long)controller.search_progress_counts,
+                     (long long)controller.search_target_counts,
                      (unsigned)log_elapsed_ms, (unsigned)max_loop_ms,
                      (unsigned)loop_overrun_count);
             previous_left_count = left_count;
