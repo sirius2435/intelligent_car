@@ -26,6 +26,8 @@ typedef struct {
     uint32_t last_ultrasonic_sequence;
     unsigned trigger_confirm_count;
     unsigned clear_confirm_count;
+    bool left_edge_confirmed;
+    uint32_t left_clearance_ms;
     int start_left_count;
     int start_right_count;
     int start_rear_count;
@@ -43,6 +45,7 @@ typedef struct {
     int turn;
     int tracking_forward_limit;
     bool active;
+    bool slow_approach;
     bool just_completed;
     bool state_changed;
 } obstacle_avoidance_result_t;

@@ -168,6 +168,7 @@ obstacle_avoidance_result_t obstacle_avoidance_update(
         if (ultrasonic->status == ULTRASONIC_READING_VALID &&
             ultrasonic->distance_mm <= AVOID_SLOW_DISTANCE_MM) {
             result.tracking_forward_limit = AVOID_SLOW_FORWARD;
+            result.slow_approach = true;
         }
         if (new_ultrasonic) {
             if (ultrasonic->status == ULTRASONIC_READING_VALID &&
@@ -197,7 +198,7 @@ obstacle_avoidance_result_t obstacle_avoidance_update(
     if (controller->state == AVOIDANCE_STRAFE_LEFT) {
         controller->progress_counts =
             all_wheel_progress(controller, left_count, right_count, rear_count);
-        if (new_ultrasonic &&
+        if (!controller->left_edge_confirmed && new_ultrasonic &&
             controller->progress_counts >= AVOID_LEFT_MIN_COUNTS) {
             const bool clear =
                 ultrasonic->status == ULTRASONIC_READING_NO_ECHO ||
@@ -206,7 +207,17 @@ obstacle_avoidance_result_t obstacle_avoidance_update(
             controller->clear_confirm_count =
                 clear ? controller->clear_confirm_count + 1U : 0U;
         }
-        if (controller->clear_confirm_count >= AVOID_CLEAR_CONFIRM_SAMPLES) {
+        if (!controller->left_edge_confirmed &&
+            controller->clear_confirm_count >= AVOID_CLEAR_CONFIRM_SAMPLES) {
+            controller->left_edge_confirmed = true;
+            controller->left_clearance_ms = 0;
+        }
+        if (controller->left_edge_confirmed) {
+            controller->left_clearance_ms =
+                add_saturated(controller->left_clearance_ms, elapsed_ms);
+        }
+        if (controller->left_edge_confirmed &&
+            controller->left_clearance_ms >= AVOID_LEFT_CLEARANCE_MS) {
             controller->outbound_lateral_counts = controller->progress_counts;
             begin_motion_stage(controller, AVOIDANCE_FORWARD_PASS,
                                left_count, right_count, rear_count);
@@ -222,7 +233,13 @@ obstacle_avoidance_result_t obstacle_avoidance_update(
     if (controller->state == AVOIDANCE_FORWARD_PASS) {
         controller->progress_counts =
             forward_progress(controller, left_count, right_count);
-        if (controller->progress_counts >= AVOID_FORWARD_TARGET_COUNTS) {
+        const int64_t left_progress =
+            abs_delta(left_count, controller->start_left_count);
+        const int64_t right_progress =
+            abs_delta(right_count, controller->start_right_count);
+        const int64_t target_per_wheel = AVOID_FORWARD_TARGET_COUNTS / 2;
+        if (left_progress >= target_per_wheel &&
+            right_progress >= target_per_wheel) {
             begin_motion_stage(controller, AVOIDANCE_STRAFE_RIGHT_FIND_LINE,
                                left_count, right_count, rear_count);
             return result_for(controller, old_state);

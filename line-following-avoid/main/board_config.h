@@ -19,6 +19,100 @@
 #define IR_SAMPLE_PERIOD_MS        10
 #define IR_DEBOUNCE_SAMPLE_COUNT    2
 
+/* HC-SR04-style ultrasonic sensor. Echo must be level-shifted to 3.3 V
+ * if the module is powered from 5 V. */
+#define ULTRASONIC_ECHO_GPIO        (13)
+#define ULTRASONIC_TRIG_GPIO        (14)
+#define ULTRASONIC_TIMEOUT_US       25000
+#define ULTRASONIC_SAMPLE_PERIOD_MS 50
+#define ULTRASONIC_OBSTACLE_CM      5
+
+/* ============================================================
+ * Obstacle avoidance parameters
+ * ============================================================
+ *
+ * Normal line following:
+ *   front wheels driven
+ *   rear wheel = 0
+ *
+ * Obstacle avoidance:
+ *   front wheels = 1/2 rear wheel speed
+ *   rear wheel is enabled
+ *
+ * Sequence:
+ *
+ *   obstacle < 5 cm
+ *        ↓
+ *      STOP
+ *        ↓
+ *   SHIFT LEFT
+ *        ↓
+ *   FORWARD ~10 cm
+ *        ↓
+ *   SHIFT RIGHT
+ *        ↓
+ *   reacquire black line
+ *        ↓
+ *   LINE FOLLOWING
+ * ============================================================ */
+
+/* Rear wheel speed during lateral movement. */
+#define OBSTACLE_SHIFT_SPEED        300
+
+/* Front wheels are half the rear-wheel speed. */
+#define OBSTACLE_SHIFT_FRONT_RATIO  0.50f
+
+/* Duration of the initial left lateral movement. */
+#define OBSTACLE_LEFT_SHIFT_MS      450
+
+/* Forward movement during obstacle avoidance. */
+#define OBSTACLE_FORWARD_SPEED      160
+
+/*
+ * Approximate forward travel of ~10 cm.
+ *
+ * This is open-loop timing. If the actual distance is too long/short,
+ * this is the first value to tune.
+ */
+#define OBSTACLE_FORWARD_MS         650
+
+/*
+ * Maximum time allowed for the final right shift.
+ * The right shift terminates earlier when the infrared sensors
+ * reacquire the black line.
+ */
+#define OBSTACLE_RIGHT_SHIFT_TIMEOUT_MS 5000
+
+/* Small settling pauses between movements. */
+#define OBSTACLE_STOP_SETTLE_MS     100
+#define OBSTACLE_SHIFT_SETTLE_MS    80
+
+/*
+ * The right-shift stage must first see white, then black.
+ * This prevents the controller from immediately accepting a line
+ * that was already underneath the sensors.
+ */
+#define OBSTACLE_REQUIRE_WHITE_MS   30
+
+/* Prevent immediate retrigger after completing avoidance. */
+#define OBSTACLE_REARM_MS           500
+
+/*
+ * Lateral direction calibration.
+ *
+ * +1 = normal direction
+ * -1 = reverse lateral direction
+ *
+ * Keep +1 initially.
+ */
+#define OBSTACLE_RIGHT_REAR_SIGN    1
+
+/* For the current 3-wheel omni layout, a lateral command uses
+ * front-wheel magnitude = rear-wheel magnitude / 2, with the rear wheel
+ * running in the opposite direction to both front wheels. If a first bench
+ * test moves sideways in the opposite direction, change this from +1 to -1. */
+#define OBSTACLE_RIGHT_REAR_SIGN    1
+
 /* D24A/TB6612FNG motor outputs verified by the wheel-test project. */
 #define MOTOR_LEFT_IN1_GPIO        41
 #define MOTOR_LEFT_IN2_GPIO        42
@@ -93,58 +187,3 @@
 #define LINE_INVALID_GRACE_MS      100
 #define LINE_START_DELAY_MS       3000
 #define LINE_LOG_PERIOD_MS         100
-
-/* HC-SR04 ultrasonic ranger. ECHO is a 5 V signal: use a divider/level shifter. */
-#define ULTRASONIC_TRIG_GPIO         14
-#define ULTRASONIC_ECHO_GPIO         13
-#define ULTRASONIC_SAMPLE_PERIOD_MS  60
-#define ULTRASONIC_ECHO_TIMEOUT_US   30000
-
-/*
- * One-shot obstacle avoidance. Positive lateral means car-left.
- * The lateral mixer uses [left, right, rear] = [-v/2, v/2, -v]. Encoder
- * targets are deliberately calibration constants: verify them at low speed
- * on the actual floor before increasing any speed.
- */
-#define AVOID_TRIGGER_DISTANCE_MM      50
-#define AVOID_TRIGGER_CONFIRM_SAMPLES   2
-#define AVOID_SLOW_DISTANCE_MM         100
-#define AVOID_SLOW_FORWARD              90
-#define AVOID_CLEAR_DISTANCE_MM        120
-#define AVOID_CLEAR_CONFIRM_SAMPLES      3
-#define AVOID_SENSOR_STALE_MS           500
-
-#define AVOID_BRAKE_MS                  100
-#define AVOID_LATERAL_SPEED             120
-#define AVOID_FORWARD_SPEED             140
-#define AVOID_LEFT_MIN_COUNTS           240
-#define AVOID_LEFT_CLEARANCE_MS          250
-#define AVOID_LEFT_MAX_COUNTS          2600
-#define AVOID_FORWARD_TARGET_COUNTS    1000
-#define AVOID_RIGHT_EXTRA_COUNTS        600
-#define AVOID_LINE_CENTERED_MS           30
-#define AVOID_MOTION_TIMEOUT_MS        6000
-#define AVOID_STALL_TIMEOUT_MS          500
-#define AVOID_STALL_MIN_COUNTS            2
-
-/* Per-wheel encoder PI loop used only while lateral motion is requested.
- *
- * Left strafe gets one high feed-forward pulse until the first speed sample,
- * then it may fall below the old 260 PWM floor.  The run log showed that the
- * wheels were still several times faster than their targets at PWM 260.
- * Right strafe keeps the existing floor until it is calibrated separately.
- */
-#define DRIVE_SPEED_CONTROL_PERIOD_MS       50
-#define DRIVE_TARGET_CPS_PER_COMMAND_NUM     2
-#define DRIVE_TARGET_CPS_PER_COMMAND_DEN     1
-#define DRIVE_LATERAL_MIN_ACTIVE_PWM       260
-#define DRIVE_LEFT_STRAFE_MIN_ACTIVE_PWM   100
-#define DRIVE_APPROACH_STARTUP_PWM         180
-#define DRIVE_APPROACH_MIN_ACTIVE_PWM      100
-#define DRIVE_FORWARD_MIN_ACTIVE_PWM       180
-#define DRIVE_LATERAL_MAX_PWM              700
-#define DRIVE_SPEED_KP_NUM                   1
-#define DRIVE_SPEED_KP_DEN                   2
-#define DRIVE_SPEED_KI_NUM                   1
-#define DRIVE_SPEED_KI_DEN                   4
-#define DRIVE_SPEED_INTEGRAL_LIMIT        1200

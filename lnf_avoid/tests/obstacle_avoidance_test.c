@@ -64,6 +64,7 @@ static void test_slow_zone_and_confirmation(void)
         step(&controller, &range, 0x06, 10, 0, 0, 0);
     CHECK(!result.active);
     CHECK(result.tracking_forward_limit == AVOID_SLOW_FORWARD);
+    CHECK(result.slow_approach);
 
     range.distance_mm = 45;
     range.sequence = 2;
@@ -85,18 +86,26 @@ static void test_complete_sequence(void)
         range.sequence = sequence;
         step(&controller, &range, 0, 10, 100, 100, 100);
     }
+    CHECK(controller.state == AVOIDANCE_STRAFE_LEFT);
+    CHECK(controller.left_edge_confirmed);
+    for (unsigned elapsed = 10; elapsed < AVOID_LEFT_CLEARANCE_MS;
+         elapsed += 10) {
+        step(&controller, &range, 0, 10, 100, 100, 100);
+    }
     CHECK(controller.state == AVOIDANCE_FORWARD_PASS);
     CHECK(controller.outbound_lateral_counts == 300);
 
     obstacle_avoidance_result_t result =
-        step(&controller, &range, 0, 10, 1200, 1200, 100);
+        step(&controller, &range, 0, 10, 900, 100, 100);
+    CHECK(result.state == AVOIDANCE_FORWARD_PASS);
+    result = step(&controller, &range, 0, 10, 900, 800, 100);
     CHECK(result.state == AVOIDANCE_STRAFE_RIGHT_FIND_LINE);
 
-    result = step(&controller, &range, 0x06, 10, 1300, 1300, 300);
+    result = step(&controller, &range, 0x06, 10, 1100, 1000, 200);
     CHECK(result.active);
-    result = step(&controller, &range, 0x06, 10, 1300, 1300, 300);
+    result = step(&controller, &range, 0x06, 10, 1100, 1000, 200);
     CHECK(result.active);
-    result = step(&controller, &range, 0x06, 10, 1300, 1300, 300);
+    result = step(&controller, &range, 0x06, 10, 1100, 1000, 200);
     CHECK(result.just_completed);
     CHECK(!result.active);
     CHECK(result.state == AVOIDANCE_COMPLETE);
@@ -104,7 +113,7 @@ static void test_complete_sequence(void)
     range.status = ULTRASONIC_READING_VALID;
     range.distance_mm = 20;
     range.sequence = 6;
-    result = step(&controller, &range, 0x06, 10, 1300, 1300, 300);
+    result = step(&controller, &range, 0x06, 10, 1100, 1000, 200);
     CHECK(result.state == AVOIDANCE_COMPLETE);
     CHECK(!result.active);
 }
