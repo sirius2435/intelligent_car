@@ -93,3 +93,34 @@
 #define LINE_INVALID_GRACE_MS      100
 #define LINE_START_DELAY_MS       3000
 #define LINE_LOG_PERIOD_MS         100
+
+/* HC-SR04 ultrasonic ranger. ECHO is a 5 V signal: use a divider/level shifter. */
+#define ULTRASONIC_TRIG_GPIO         14
+#define ULTRASONIC_ECHO_GPIO         13
+#define ULTRASONIC_SAMPLE_PERIOD_MS  60
+#define ULTRASONIC_ECHO_TIMEOUT_US   30000
+
+/*
+ * One-shot obstacle avoidance. Positive lateral means car-left. Encoder
+ * targets are deliberately calibration constants: verify them at low speed
+ * on the actual floor before increasing any speed.
+ */
+#define AVOID_TRIGGER_DISTANCE_MM      50
+#define AVOID_TRIGGER_CONFIRM_SAMPLES   2
+#define AVOID_SLOW_DISTANCE_MM         100
+#define AVOID_SLOW_FORWARD              90
+#define AVOID_CLEAR_DISTANCE_MM        120
+#define AVOID_CLEAR_CONFIRM_SAMPLES      3
+#define AVOID_SENSOR_STALE_MS           500
+
+#define AVOID_BRAKE_MS                  100
+#define AVOID_LATERAL_SPEED             300
+#define AVOID_FORWARD_SPEED             140
+#define AVOID_LEFT_MIN_COUNTS           240
+#define AVOID_LEFT_MAX_COUNTS          2600
+#define AVOID_FORWARD_TARGET_COUNTS    2200
+#define AVOID_RIGHT_EXTRA_COUNTS        600
+#define AVOID_LINE_CENTERED_MS           30
+#define AVOID_MOTION_TIMEOUT_MS        6000
+#define AVOID_STALL_TIMEOUT_MS          500
+#define AVOID_STALL_MIN_COUNTS            2

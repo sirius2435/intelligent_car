@@ -21,7 +21,15 @@ typedef struct {
 } drive_wheel_command_t;
 
 esp_err_t drive_init(void);
-esp_err_t drive_set_motion(int forward, int turn, drive_wheel_command_t *applied);
+void drive_mix_motion(int forward,
+                      int lateral,
+                      int turn,
+                      drive_wheel_command_t *command);
+/* Positive lateral moves the car left; positive turn rotates it right. */
+esp_err_t drive_set_motion(int forward,
+                           int lateral,
+                           int turn,
+                           drive_wheel_command_t *applied);
 esp_err_t drive_stop(void);
 
 #ifdef __cplusplus

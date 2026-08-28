@@ -3,6 +3,8 @@
 #include "encoder.h"
 #include "infrared_sensor.h"
 #include "line_follow.h"
+#include "obstacle_avoidance.h"
+#include "ultrasonic.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -14,7 +16,8 @@ static const char *TAG = "line_following";
 /*
  * Motor-symmetry test hook. Mount the car so both drive wheels spin freely
  * in the air, set MOTOR_SYMMETRY_TEST to 1, build and flash. The loop then
- * commands drive_set_motion(MOTOR_SYMMETRY_FORWARD, MOTOR_SYMMETRY_TURN)
+ * commands drive_set_motion(MOTOR_SYMMETRY_FORWARD, 0,
+ *                           MOTOR_SYMMETRY_TURN)
  * every cycle, bypassing line following, while the periodic log still prints
  * left/right encoder deltas. Compare delta[0] (left) and delta[1] (right):
  * their magnitudes must be close. Keep this 0 for normal line following.
@@ -58,12 +61,22 @@ void app_main(void)
         return;
     }
 
+    result = ultrasonic_init();
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Ultrasonic initialization failed: %s",
+                 esp_err_to_name(result));
+        ESP_ERROR_CHECK_WITHOUT_ABORT(drive_stop());
+        return;
+    }
+
     ESP_LOGW(TAG, "Line following starts in %d ms; keep the car safely positioned",
              LINE_START_DELAY_MS);
     vTaskDelay(pdMS_TO_TICKS(LINE_START_DELAY_MS));
 
     line_follow_controller_t controller;
     line_follow_init(&controller);
+    obstacle_avoidance_controller_t avoidance;
+    obstacle_avoidance_init(&avoidance);
     infrared_sensor_state_t sensor = {0};
     TickType_t wake_time = xTaskGetTickCount();
     TickType_t previous_ticks = wake_time;
@@ -102,21 +115,58 @@ void app_main(void)
             stop_after_runtime_error("encoder_get_all", result);
         }
 
+        ultrasonic_reading_t ultrasonic = {0};
+        result = ultrasonic_get_latest(&ultrasonic);
+        if (result != ESP_OK) {
+            stop_after_runtime_error("ultrasonic_get_latest", result);
+        }
+
         drive_wheel_command_t wheels = {0};
+        int commanded_forward = 0;
+        int commanded_lateral = 0;
+        int commanded_turn = 0;
 #if MOTOR_SYMMETRY_TEST
-        const line_follow_result_t control = {
+        line_follow_result_t control = {
             .state = LINE_FOLLOW_TRACKING,
             .error = 0,
             .forward = MOTOR_SYMMETRY_FORWARD,
             .turn = MOTOR_SYMMETRY_TURN,
             .state_changed = false,
         };
+        obstacle_avoidance_result_t avoid_control = {
+            .state = AVOIDANCE_ARMED,
+            .tracking_forward_limit = 1000,
+        };
+        commanded_forward = control.forward;
+        commanded_turn = control.turn;
 #else
-        const line_follow_result_t control =
-            line_follow_update(&controller, sensor.black_mask, elapsed_ms,
-                               left_count, right_count);
+        const obstacle_avoidance_result_t avoid_control =
+            obstacle_avoidance_update(&avoidance, &ultrasonic, sensor.black_mask,
+                                      elapsed_ms, left_count, right_count,
+                                      rear_count);
+        if (avoid_control.just_completed) {
+            line_follow_init(&controller);
+        }
+
+        line_follow_result_t control = {
+            .state = controller.state,
+        };
+        if (avoid_control.active) {
+            commanded_forward = avoid_control.forward;
+            commanded_lateral = avoid_control.lateral;
+            commanded_turn = avoid_control.turn;
+        } else {
+            control = line_follow_update(&controller, sensor.black_mask,
+                                         elapsed_ms, left_count, right_count);
+            if (control.forward > avoid_control.tracking_forward_limit) {
+                control.forward = avoid_control.tracking_forward_limit;
+            }
+            commanded_forward = control.forward;
+            commanded_turn = control.turn;
+        }
 #endif
-        result = drive_set_motion(control.forward, control.turn, &wheels);
+        result = drive_set_motion(commanded_forward, commanded_lateral,
+                                  commanded_turn, &wheels);
         if (result != ESP_OK) {
             stop_after_runtime_error("drive_set_motion", result);
         }
@@ -128,16 +178,25 @@ void app_main(void)
             char display[5];
             infrared_sensor_format(sensor.black_mask, display);
             ESP_LOGI(TAG,
-                     "state=%s sensor=%s error=%d forward=%d turn=%d "
+                     "state=%s sensor=%s error=%d motion=[f=%d,l=%d,t=%d] "
                      "wheels=[%d,%d,%d] enc=[%d,%d,%d] delta=[%d,%d,%d] "
+                     "range=[%s,%umm,seq=%u] "
+                     "avoid=[state=%s progress=%lld outbound=%lld] "
                      "search=[leg=%u dir=%d phase=%s progress=%lld/%lld] "
                      "dt=%ums loop_max=%ums overruns=%u",
                      line_follow_state_name(control.state), display, control.error,
-                     control.forward, control.turn, wheels.left, wheels.right, wheels.rear,
+                     commanded_forward, commanded_lateral, commanded_turn,
+                     wheels.left, wheels.right, wheels.rear,
                      left_count, right_count, rear_count,
                      left_count - previous_left_count,
                      right_count - previous_right_count,
                      rear_count - previous_rear_count,
+                     ultrasonic_status_name(ultrasonic.status),
+                     (unsigned)ultrasonic.distance_mm,
+                     (unsigned)ultrasonic.sequence,
+                     obstacle_avoidance_state_name(avoid_control.state),
+                     (long long)avoidance.progress_counts,
+                     (long long)avoidance.outbound_lateral_counts,
                      controller.search_phase == LINE_SEARCH_IDLE ?
                          0U : controller.search_leg + 1U,
                      controller.search_direction,

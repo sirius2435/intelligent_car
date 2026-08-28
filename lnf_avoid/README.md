@@ -1,7 +1,7 @@
-# ESP32-S3 三轮全向车巡线工程
+# ESP32-S3 三轮全向车巡线避障工程
 
 该工程与 `infrared-sensor` 测试工程并列，整合四路红外传感器、D24A
-三电机驱动、双轮差速驱动和开环 PD 巡线控制。现有测试工程不会被修改。
+三电机驱动、开环 PD 巡线控制、HC-SR04 测距和一次性横移避障。
 
 ## 使用前配置
 
@@ -12,13 +12,25 @@
 左轮 Motor D、右轮 Motor A、后轮 Motor B。GPIO4 会在电机运行前拉高，
 停车后拉低。
 
-驱动方案：双轮差速——只有两个前轮被驱动，同速前进，正 `turn` 右转
-（左轮快、右轮慢），后轮完全不驱动、被动随动。首次运行必须架空车轮：
-正 `forward` 应直行，正 `turn` 应右转。若正 forward 倒车或横移、正 turn
-左转，记录实测现象再改配置；单个轮子方向相反时修改对应的
-`MOTOR_*_REVERSED`，不要在巡线算法中修改符号。
+HC-SR04 使用 GPIO14 作为 TRIG、GPIO13 作为 ECHO。HC-SR04 的 ECHO 是
+5 V 信号，接入 ESP32-S3 前必须使用电阻分压或电平转换。
+
+驱动接口使用 `forward/lateral/turn` 三个分量。正 `lateral` 表示向左横移，
+横移轮速比例为 `[左, 右, 后] = [lateral/2, lateral/2, -lateral/2]`；
+巡线仍保持 `[forward+turn, forward-turn, 0]`。首次运行必须架空车轮，分别
+确认正 `forward` 直行、正 `lateral` 左移、正 `turn` 右转。单个轮子方向
+错误时修改对应的 `MOTOR_*_REVERSED`，不要在控制状态机中修改符号。
 
 ## 控制行为
+
+- 正常巡线时持续读取前向距离；进入 10 cm 范围后减速，连续两次测得
+  距离不大于 5 cm 后停车并启动一次性避障。
+- 避障顺序为：左横移至前方连续确认无障碍、编码器定距前进、向右横移，
+  直到红外中间通道稳定找到黑线，然后重置控制器并恢复巡线。
+- 避障只执行一次。测距数据超时、任一运动阶段超时、编码器堵转或横移
+  超过安全上限都会进入 `FAULT_STOP` 锁定停车。
+- `AVOID_FORWARD_TARGET_COUNTS`、横移计数和各阶段速度是低速初值，必须
+  按实际障碍长度、车体尺寸、轮径及地面摩擦进行标定。
 
 - 正常黑线：按四路加权位置误差进行 PD 转向，弯道自动降低前进速度。
 - 拐角候选：已经稳定居中后，同一侧大偏差持续 30 ms 才进入候选；候选后
@@ -59,7 +71,7 @@
 在 ESP-IDF 5.4.x PowerShell 环境中执行：
 
 ```powershell
-cd D:\esp-projects\line-following
+cd D:\idf_intelligent_car_txgayay\lnf_avoid
 idf.py set-target esp32s3
 idf.py build
 idf.py -p COM端口 flash monitor
