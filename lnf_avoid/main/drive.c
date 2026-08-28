@@ -233,7 +233,7 @@ esp_err_t drive_set_motion_feedback(int forward,
     drive_wheel_command_t target = {0};
     drive_mix_motion(forward, lateral, turn, &target);
     const int running_minimum_pwm = lateral > 0 ?
-        DRIVE_LEFT_STRAFE_MIN_ACTIVE_PWM : DRIVE_LATERAL_MIN_ACTIVE_PWM;
+        DRIVE_LEFT_STRAFE_MIN_ACTIVE_PWM : DRIVE_RIGHT_STRAFE_MIN_ACTIVE_PWM;
     drive_wheel_command_t pwm = {0};
     drive_wheel_command_t measured = {0};
     pwm.left = update_wheel_feedback(&s_feedback[0], target.left,

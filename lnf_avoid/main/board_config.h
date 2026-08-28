@@ -129,16 +129,17 @@
 
 /* Per-wheel encoder PI loop used only while lateral motion is requested.
  *
- * Left strafe gets one high feed-forward pulse until the first speed sample,
- * then it may fall below the old 260 PWM floor.  The run log showed that the
- * wheels were still several times faster than their targets at PWM 260.
- * Right strafe keeps the existing floor until it is calibrated separately.
+ * Each strafe direction gets one high feed-forward pulse until the first
+ * speed sample, then it may fall below the old 260 PWM floor.  The run log
+ * showed that the wheels were still several times faster than their targets
+ * at PWM 260, so left strafe runs down to 100 PWM and right strafe to 90.
  */
 #define DRIVE_SPEED_CONTROL_PERIOD_MS       50
 #define DRIVE_TARGET_CPS_PER_COMMAND_NUM     2
 #define DRIVE_TARGET_CPS_PER_COMMAND_DEN     1
 #define DRIVE_LATERAL_MIN_ACTIVE_PWM       260
 #define DRIVE_LEFT_STRAFE_MIN_ACTIVE_PWM   100
+#define DRIVE_RIGHT_STRAFE_MIN_ACTIVE_PWM   90
 #define DRIVE_APPROACH_STARTUP_PWM         180
 #define DRIVE_APPROACH_MIN_ACTIVE_PWM      100
 #define DRIVE_FORWARD_MIN_ACTIVE_PWM       180
