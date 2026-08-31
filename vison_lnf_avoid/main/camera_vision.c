@@ -55,6 +55,15 @@ static volatile uint32_t s_pending_seq;
 static SemaphoreHandle_t s_frame_sem;
 static TaskHandle_t s_vision_task;
 
+/* Snapshot of the latest raw MJPEG payload for HTTP streaming. The vision
+ * task publishes frames into s_stream_buffer; the stream server copies them
+ * out under s_stream_lock. Optional: allocation failure only disables the
+ * viewer, never the vision pipeline. */
+static uint8_t *s_stream_buffer;
+static SemaphoreHandle_t s_stream_lock;
+static size_t s_stream_bytes;
+static uint32_t s_stream_seq;
+
 static void publish_connection(bool connected)
 {
     taskENTER_CRITICAL(&s_status_lock);
@@ -121,6 +130,17 @@ static void vision_task(void *arg)
         const uint32_t bytes = s_pending_bytes;
         const uint32_t seq = s_pending_seq;
         taskEXIT_CRITICAL(&s_status_lock);
+
+        /* Publish the untouched MJPEG payload for the HTTP stream before
+         * decoding. Try-lock: if the stream server is mid-copy, skip this
+         * frame; the next one will be published. */
+        if (s_stream_lock != NULL &&
+            xSemaphoreTake(s_stream_lock, 0) == pdTRUE) {
+            memcpy(s_stream_buffer, s_jpeg_buffer, bytes);
+            s_stream_bytes = bytes;
+            s_stream_seq = seq;
+            xSemaphoreGive(s_stream_lock);
+        }
 
         esp_jpeg_image_cfg_t decode = {
             .indata = s_jpeg_buffer,
@@ -194,6 +214,22 @@ esp_err_t camera_vision_start(void)
         return ESP_ERR_NO_MEM;
     }
 
+    /* Stream snapshot is best-effort; running out of memory only turns the
+     * network viewer off. */
+    s_stream_buffer = allocate_psram(CAMERA_UVC_BUFFER_SIZE);
+    s_stream_lock = xSemaphoreCreateMutex();
+    if (s_stream_buffer == NULL || s_stream_lock == NULL) {
+        ESP_LOGW(TAG, "stream snapshot unavailable; HTTP viewer disabled");
+        if (s_stream_lock != NULL) {
+            vSemaphoreDelete(s_stream_lock);
+            s_stream_lock = NULL;
+        }
+        if (s_stream_buffer != NULL) {
+            heap_caps_free(s_stream_buffer);
+            s_stream_buffer = NULL;
+        }
+    }
+
     if (xTaskCreate(vision_task, "vision_proc", VISION_TASK_STACK_SIZE, NULL,
                     VISION_TASK_PRIORITY, &s_vision_task) != pdPASS) {
         ESP_LOGE(TAG, "failed to create vision task");
@@ -257,4 +293,31 @@ esp_err_t camera_vision_get_status(camera_vision_status_t *status)
     };
     taskEXIT_CRITICAL(&s_status_lock);
     return s_started ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t camera_vision_get_jpeg(uint8_t *dst, size_t dst_capacity,
+                                 size_t *out_bytes, uint32_t *out_seq)
+{
+    if (dst == NULL || out_bytes == NULL || out_seq == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_stream_buffer == NULL || s_stream_lock == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xSemaphoreTake(s_stream_lock, pdMS_TO_TICKS(50)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t result;
+    if (s_stream_seq == 0U) {
+        result = ESP_ERR_INVALID_STATE;
+    } else if (s_stream_bytes == 0U || s_stream_bytes > dst_capacity) {
+        result = ESP_ERR_NO_MEM;
+    } else {
+        memcpy(dst, s_stream_buffer, s_stream_bytes);
+        *out_bytes = s_stream_bytes;
+        *out_seq = s_stream_seq;
+        result = ESP_OK;
+    }
+    xSemaphoreGive(s_stream_lock);
+    return result;
 }

@@ -1,4 +1,5 @@
 #include "board_config.h"
+#include "camera_stream.h"
 #include "camera_vision.h"
 #include "drive.h"
 #include "encoder.h"
@@ -61,6 +62,14 @@ void app_main(void)
     const esp_err_t lcd_result = lcd_monitor_start();
     if (lcd_result != ESP_OK) {
         ESP_LOGW(TAG, "LCD disabled: %s", esp_err_to_name(lcd_result));
+    }
+
+    /* Wi-Fi viewer (PC / phone): started before the camera so /status still
+     * reports why no frame arrives if the camera later fails. Non-fatal. */
+    const esp_err_t stream_result = camera_stream_start();
+    if (stream_result != ESP_OK) {
+        ESP_LOGW(TAG, "camera stream disabled: %s",
+                 esp_err_to_name(stream_result));
     }
 
     require_ok("camera_vision_start", camera_vision_start());

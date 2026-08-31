@@ -5,6 +5,7 @@ idf_component_register(
         "encoder.c"
         "drive.c"
         "camera_vision.c"
+        "camera_stream.c"
         "vision_line.c"
         "vision_follow.c"
         "ultrasonic.c"
@@ -14,4 +15,5 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES esp_driver_gpio esp_driver_ledc esp_driver_pcnt esp_driver_spi
              esp_timer esp_psram usb_stream esp_jpeg
+             esp_wifi esp_netif esp_event esp_http_server nvs_flash
 )

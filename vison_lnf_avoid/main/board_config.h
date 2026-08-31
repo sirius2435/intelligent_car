@@ -239,3 +239,16 @@
  * distance value is the median of the last N valid HC-SR04 readings. */
 #define LCD_MONITOR_PERIOD_MS       200
 #define LCD_MONITOR_DISTANCE_MEDIAN 5
+
+/* ------------------------------------------------------------------ */
+/* Camera stream: Wi-Fi soft-AP + MJPEG HTTP viewer for a PC / phone.  */
+/* Connect to the AP below, then open http://192.168.4.1/ in a browser.*/
+/* The MJPEG stream is on port 81 (one viewer at a time).              */
+#define STREAM_AP_SSID              "vison_car"
+#define STREAM_AP_PASSWORD          "12345678"  /* "" = open AP; WPA2 needs >= 8 chars */
+#define STREAM_AP_CHANNEL             6
+#define STREAM_AP_MAX_CONNECTIONS     4
+#define STREAM_HTTP_PORT             80
+#define STREAM_MJPEG_PORT            81
+#define STREAM_MAX_CLIENTS            1
+#define STREAM_POLL_MS               40   /* wait between "new frame?" polls */
