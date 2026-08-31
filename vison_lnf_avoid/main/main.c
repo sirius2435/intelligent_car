@@ -1,258 +1,199 @@
 #include "board_config.h"
+#include "camera_vision.h"
 #include "drive.h"
 #include "encoder.h"
-#include "infrared_sensor.h"
 #include "lcd_monitor.h"
-#include "line_follow.h"
 #include "obstacle_avoidance.h"
 #include "ultrasonic.h"
+#include "vision_follow.h"
+
+#include <stdbool.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-static const char *TAG = "line_following";
+static const char *TAG = "vision_car";
 
-/*
- * Motor-symmetry test hook. Mount the car so both drive wheels spin freely
- * in the air, set MOTOR_SYMMETRY_TEST to 1, build and flash. The loop then
- * commands drive_set_motion(MOTOR_SYMMETRY_FORWARD, 0,
- *                           MOTOR_SYMMETRY_TURN)
- * every cycle, bypassing line following, while the periodic log still prints
- * left/right encoder deltas. Compare delta[0] (left) and delta[1] (right):
- * their magnitudes must be close. Keep this 0 for normal line following.
- */
-#define MOTOR_SYMMETRY_TEST       0
-#define MOTOR_SYMMETRY_FORWARD  160
-#define MOTOR_SYMMETRY_TURN       0
-
-static void stop_after_runtime_error(const char *operation, esp_err_t result)
+static void lock_stop(const char *reason)
 {
-    ESP_LOGE(TAG, "%s failed: %s", operation, esp_err_to_name(result));
-    const esp_err_t stop_result = drive_stop();
-    if (stop_result != ESP_OK) {
-        ESP_LOGE(TAG, "Emergency motor stop failed: %s", esp_err_to_name(stop_result));
-    }
+    ESP_LOGE(TAG, "locked stop: %s", reason);
+    ESP_ERROR_CHECK_WITHOUT_ABORT(drive_stop());
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
+static void require_ok(const char *operation, esp_err_t result)
+{
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "%s failed: %s", operation, esp_err_to_name(result));
+        lock_stop(operation);
+    }
+}
+
+static void wait_for_first_camera_frame(void)
+{
+    const int64_t deadline = esp_timer_get_time() +
+        (int64_t)CAMERA_CONNECT_TIMEOUT_MS * 1000LL;
+    while (esp_timer_get_time() < deadline) {
+        camera_vision_status_t camera = {0};
+        if (camera_vision_get_status(&camera) == ESP_OK &&
+            camera.connected && camera.vision.frame_valid) {
+            ESP_LOGI(TAG, "camera ready after %u frames",
+                     (unsigned)camera.received_frames);
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    lock_stop("camera did not provide a valid MJPEG frame");
+}
+
 void app_main(void)
 {
-    esp_err_t result = drive_init();
-    if (result != ESP_OK) {
-        ESP_LOGE(TAG, "Drive initialization failed: %s", esp_err_to_name(result));
-        return;
+    require_ok("drive_init", drive_init());
+    require_ok("encoder_init", encoder_init());
+    require_ok("ultrasonic_init", ultrasonic_init());
+
+    const esp_err_t lcd_result = lcd_monitor_start();
+    if (lcd_result != ESP_OK) {
+        ESP_LOGW(TAG, "LCD disabled: %s", esp_err_to_name(lcd_result));
     }
 
-    result = infrared_sensor_init();
-    if (result != ESP_OK) {
-        ESP_LOGE(TAG, "Sensor initialization failed: %s", esp_err_to_name(result));
-        ESP_LOGE(TAG, "Fill all IR_CHANNEL_*_GPIO values in main/board_config.h");
-        ESP_ERROR_CHECK_WITHOUT_ABORT(drive_stop());
-        return;
-    }
+    require_ok("camera_vision_start", camera_vision_start());
+    wait_for_first_camera_frame();
 
-    result = encoder_init();
-    if (result != ESP_OK) {
-        ESP_LOGE(TAG, "Encoder initialization failed: %s", esp_err_to_name(result));
-        ESP_ERROR_CHECK_WITHOUT_ABORT(drive_stop());
-        return;
-    }
-
-    result = ultrasonic_init();
-    if (result != ESP_OK) {
-        ESP_LOGE(TAG, "Ultrasonic initialization failed: %s",
-                 esp_err_to_name(result));
-        ESP_ERROR_CHECK_WITHOUT_ABORT(drive_stop());
-        return;
-    }
-
-    result = lcd_monitor_start();
-    if (result != ESP_OK) {
-        /* The dashboard is optional; the car keeps driving without it. */
-        ESP_LOGW(TAG, "LCD dashboard disabled: %s", esp_err_to_name(result));
-    }
-
-    ESP_LOGW(TAG, "Line following starts in %d ms; keep the car safely positioned",
+    ESP_LOGW(TAG, "task 2 starts in %d ms; infrared power must be disconnected",
              LINE_START_DELAY_MS);
     vTaskDelay(pdMS_TO_TICKS(LINE_START_DELAY_MS));
 
-    line_follow_controller_t controller;
-    line_follow_init(&controller);
+    vision_follow_controller_t follower;
+    vision_follow_init(&follower);
     obstacle_avoidance_controller_t avoidance;
     obstacle_avoidance_init(&avoidance);
-    infrared_sensor_state_t sensor = {0};
+
     TickType_t wake_time = xTaskGetTickCount();
     TickType_t previous_ticks = wake_time;
     uint32_t log_elapsed_ms = 0;
-    uint32_t max_loop_ms = 0;
-    uint32_t loop_overrun_count = 0;
-    int previous_left_count = 0;
-    int previous_right_count = 0;
-    int previous_rear_count = 0;
+    bool locked = false;
 
     while (1) {
-        /* Real elapsed time since the previous iteration: the nominal
-           period is a lower bound, and a slow log write would otherwise
-           stretch every ms-based timer in the controller. */
-        const TickType_t now = xTaskGetTickCount();
-        const uint32_t elapsed_ms =
-            (uint32_t)((now - previous_ticks) * portTICK_PERIOD_MS);
-        previous_ticks = now;
-        if (elapsed_ms > max_loop_ms) {
-            max_loop_ms = elapsed_ms;
-        }
-        if (elapsed_ms > IR_SAMPLE_PERIOD_MS) {
-            ++loop_overrun_count;
-        }
-
-        result = infrared_sensor_sample(&sensor);
-        if (result != ESP_OK) {
-            stop_after_runtime_error("infrared_sensor_sample", result);
+        const TickType_t now_ticks = xTaskGetTickCount();
+        uint32_t elapsed_ms =
+            (uint32_t)((now_ticks - previous_ticks) * portTICK_PERIOD_MS);
+        previous_ticks = now_ticks;
+        if (elapsed_ms == 0U) {
+            elapsed_ms = CONTROL_PERIOD_MS;
         }
 
         int left_count = 0;
         int right_count = 0;
         int rear_count = 0;
-        result = encoder_get_all(&left_count, &right_count, &rear_count);
-        if (result != ESP_OK) {
-            stop_after_runtime_error("encoder_get_all", result);
-        }
+        require_ok("encoder_get_all",
+                   encoder_get_all(&left_count, &right_count, &rear_count));
 
         ultrasonic_reading_t ultrasonic = {0};
-        result = ultrasonic_get_latest(&ultrasonic);
-        if (result != ESP_OK) {
-            stop_after_runtime_error("ultrasonic_get_latest", result);
+        require_ok("ultrasonic_get_latest",
+                   ultrasonic_get_latest(&ultrasonic));
+
+        camera_vision_status_t camera = {0};
+        require_ok("camera_vision_get_status",
+                   camera_vision_get_status(&camera));
+        const int64_t frame_age_ms = camera.last_frame_us == 0 ? INT64_MAX :
+            (esp_timer_get_time() - camera.last_frame_us) / 1000LL;
+        if (!camera.connected || frame_age_ms > CAMERA_FRAME_STALE_MS) {
+            if (!locked) {
+                ESP_LOGE(TAG, "camera unavailable: connected=%d age=%lldms",
+                         camera.connected, (long long)frame_age_ms);
+            }
+            locked = true;
+        }
+
+        obstacle_avoidance_result_t avoid = obstacle_avoidance_update(
+            &avoidance, &ultrasonic, &camera.vision, elapsed_ms,
+            left_count, right_count, rear_count);
+        if (avoid.just_completed) {
+            vision_follow_init(&follower);
+        }
+
+        vision_follow_output_t follow = {
+            .state = follower.state,
+        };
+        int forward = 0;
+        int lateral = 0;
+        int turn = 0;
+        if (!locked && avoid.active) {
+            forward = avoid.forward;
+            lateral = avoid.lateral;
+            turn = avoid.turn;
+        } else if (!locked) {
+            const bool finish_enabled =
+                avoidance.state == AVOIDANCE_COMPLETE;
+            follow = vision_follow_update(&follower, &camera.vision,
+                                          finish_enabled, elapsed_ms);
+            forward = follow.forward;
+            turn = follow.turn;
+            if (forward > avoid.tracking_forward_limit) {
+                forward = avoid.tracking_forward_limit;
+            }
+            if (follow.finished || follow.state == VISION_FOLLOW_FAULT_STOP) {
+                locked = true;
+                forward = 0;
+                turn = 0;
+            }
+        }
+        if (avoid.state == AVOIDANCE_FAULT_STOP) {
+            locked = true;
+            forward = 0;
+            lateral = 0;
+            turn = 0;
         }
 
         drive_wheel_command_t wheels = {0};
-        int commanded_forward = 0;
-        int commanded_lateral = 0;
-        int commanded_turn = 0;
-#if MOTOR_SYMMETRY_TEST
-        line_follow_result_t control = {
-            .state = LINE_FOLLOW_TRACKING,
-            .error = 0,
-            .forward = MOTOR_SYMMETRY_FORWARD,
-            .turn = MOTOR_SYMMETRY_TURN,
-            .state_changed = false,
-        };
-        obstacle_avoidance_result_t avoid_control = {
-            .state = AVOIDANCE_ARMED,
-            .tracking_forward_limit = 1000,
-        };
-        commanded_forward = control.forward;
-        commanded_turn = control.turn;
-#else
-        const obstacle_avoidance_result_t avoid_control =
-            obstacle_avoidance_update(&avoidance, &ultrasonic, sensor.black_mask,
-                                      elapsed_ms, left_count, right_count,
-                                      rear_count);
-        if (avoid_control.just_completed) {
-            line_follow_init(&controller);
-        }
-
-        line_follow_result_t control = {
-            .state = controller.state,
-        };
-        if (avoid_control.active) {
-            commanded_forward = avoid_control.forward;
-            commanded_lateral = avoid_control.lateral;
-            commanded_turn = avoid_control.turn;
+        esp_err_t drive_result;
+        if (locked) {
+            drive_result = drive_stop();
+        } else if (avoid.active &&
+                   avoid.state == AVOIDANCE_FORWARD_PASS) {
+            drive_result = drive_set_forward_feedback(
+                forward, elapsed_ms, left_count, right_count, &wheels);
+        } else if (lateral != 0) {
+            drive_result = drive_set_motion_feedback(
+                forward, lateral, turn, elapsed_ms,
+                left_count, right_count, rear_count, &wheels);
+        } else if (!avoid.active && avoid.slow_approach && forward > 0) {
+            drive_result = drive_set_approach_feedback(
+                forward, turn, elapsed_ms, left_count, right_count, &wheels);
         } else {
-            control = line_follow_update(&controller, sensor.black_mask,
-                                         elapsed_ms, left_count, right_count);
-            if (control.forward > avoid_control.tracking_forward_limit) {
-                control.forward = avoid_control.tracking_forward_limit;
-            }
-            commanded_forward = control.forward;
-            commanded_turn = control.turn;
+            drive_result = drive_set_motion(forward, lateral, turn, &wheels);
         }
-#endif
-        if (avoid_control.active &&
-            avoid_control.state == AVOIDANCE_FORWARD_PASS) {
-            result = drive_set_forward_feedback(commanded_forward,
-                                                elapsed_ms,
-                                                left_count,
-                                                right_count,
-                                                &wheels);
-        } else if (!avoid_control.active && avoid_control.slow_approach &&
-                   commanded_forward > 0) {
-            result = drive_set_approach_feedback(commanded_forward,
-                                                 commanded_turn,
-                                                 elapsed_ms,
-                                                 left_count,
-                                                 right_count,
-                                                 &wheels);
-        } else {
-            result = drive_set_motion_feedback(commanded_forward,
-                                               commanded_lateral,
-                                               commanded_turn,
-                                               elapsed_ms,
-                                               left_count,
-                                               right_count,
-                                               rear_count,
-                                               &wheels);
-        }
-        if (result != ESP_OK) {
-            stop_after_runtime_error("drive_set_motion", result);
-        }
+        require_ok("drive command", drive_result);
 
         log_elapsed_ms += elapsed_ms;
-        /* Keep UART output strictly periodic. Sensor transitions can occur every
-           control cycle on dense bends and must not trigger extra blocking logs. */
         if (log_elapsed_ms >= LINE_LOG_PERIOD_MS) {
-            char display[5];
-            drive_feedback_status_t feedback = {0};
-            drive_get_feedback_status(&feedback);
-            infrared_sensor_format(sensor.black_mask, display);
             ESP_LOGI(TAG,
-                     "state=%s sensor=%s error=%d motion=[f=%d,l=%d,t=%d] "
-                     "wheels=[%d,%d,%d] enc=[%d,%d,%d] delta=[%d,%d,%d] "
-                     "range=[%s,%umm,seq=%u] "
-                     "avoid=[state=%s progress=%lld outbound=%lld] "
-                     "speed_loop=[on=%d target=%d,%d,%d measured=%d,%d,%d] "
-                     "search=[leg=%u dir=%d phase=%s progress=%lld/%lld] "
-                     "dt=%ums loop_max=%ums overruns=%u",
-                     line_follow_state_name(control.state), display, control.error,
-                     commanded_forward, commanded_lateral, commanded_turn,
-                     wheels.left, wheels.right, wheels.rear,
-                     left_count, right_count, rear_count,
-                     left_count - previous_left_count,
-                     right_count - previous_right_count,
-                     rear_count - previous_rear_count,
+                     "follow=%s avoid=%s lock=%d motion=[%d,%d,%d] "
+                     "vision=[line=%d finish=%d conf=%u err=%d head=%d rows=%u "
+                     "seq=%u age=%lldms drop=%u] range=[%s,%umm] "
+                     "enc=[%d,%d,%d] progress=%lld",
+                     vision_follow_state_name(follow.state),
+                     obstacle_avoidance_state_name(avoid.state), locked,
+                     forward, lateral, turn,
+                     camera.vision.line_found, camera.vision.finish_marker,
+                     camera.vision.confidence, camera.vision.lateral_error,
+                     camera.vision.heading_error, camera.vision.valid_rows,
+                     (unsigned)camera.vision.sequence, (long long)frame_age_ms,
+                     (unsigned)camera.dropped_frames,
                      ultrasonic_status_name(ultrasonic.status),
                      (unsigned)ultrasonic.distance_mm,
-                     (unsigned)ultrasonic.sequence,
-                     obstacle_avoidance_state_name(avoid_control.state),
-                     (long long)avoidance.progress_counts,
-                     (long long)avoidance.outbound_lateral_counts,
-                     feedback.active,
-                     feedback.target_cps.left,
-                     feedback.target_cps.right,
-                     feedback.target_cps.rear,
-                     feedback.measured_cps.left,
-                     feedback.measured_cps.right,
-                     feedback.measured_cps.rear,
-                     controller.search_phase == LINE_SEARCH_IDLE ?
-                         0U : controller.search_leg + 1U,
-                     controller.search_direction,
-                     line_follow_search_phase_name(controller.search_phase),
-                     (long long)controller.search_progress_counts,
-                     (long long)controller.search_target_counts,
-                     (unsigned)log_elapsed_ms, (unsigned)max_loop_ms,
-                     (unsigned)loop_overrun_count);
-            previous_left_count = left_count;
-            previous_right_count = right_count;
-            previous_rear_count = rear_count;
+                     left_count, right_count, rear_count,
+                     (long long)avoidance.progress_counts);
             log_elapsed_ms = 0;
-            max_loop_ms = 0;
-            loop_overrun_count = 0;
         }
 
-        vTaskDelayUntil(&wake_time, pdMS_TO_TICKS(IR_SAMPLE_PERIOD_MS));
+        vTaskDelayUntil(&wake_time, pdMS_TO_TICKS(CONTROL_PERIOD_MS));
     }
 }

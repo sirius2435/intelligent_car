@@ -1,18 +1,11 @@
 #pragma once
 
-/*
- * Four-channel line sensor, viewed from the front of the car:
- *
- *       car left                         car right
- *       channel 4  channel 3  channel 2  channel 1
- *
- * Replace all four -1 values with the actual GPIO numbers before building
- * firmware for the car.
- */
-#define IR_CHANNEL_4_GPIO  (9)
-#define IR_CHANNEL_3_GPIO  (10)
-#define IR_CHANNEL_2_GPIO  (11)
-#define IR_CHANNEL_1_GPIO  (12)
+/* Task 2 disconnects the infrared board. Keep placeholders so the old
+ * infrared-only sources can still be used by a separate build if required. */
+#define IR_CHANNEL_4_GPIO  (-1)
+#define IR_CHANNEL_3_GPIO  (-1)
+#define IR_CHANNEL_2_GPIO  (-1)
+#define IR_CHANNEL_1_GPIO  (-1)
 
 /* LQ_R4CHVB outputs low while its sensor is over a black line. */
 #define IR_BLACK_LEVEL              0
@@ -93,6 +86,61 @@
 #define LINE_INVALID_GRACE_MS      100
 #define LINE_START_DELAY_MS       3000
 #define LINE_LOG_PERIOD_MS         100
+#define CONTROL_PERIOD_MS           10
+
+/* USB UVC camera. ESP32-S3 USB D-/D+ are fixed internally to GPIO19/20.
+ * The current camera (idVendor 0x349c / idProduct 0x3307, UVC+UAC, BULK)
+ * advertises only these MJPEG frame sizes:
+ *   1280x720, 800x480, 640x480, 480x320, 480x854.
+ * The camera is mounted in portrait orientation (wide edge vertical), so
+ * request the portrait 480x854 size (frame index 5). */
+#define CAMERA_FRAME_WIDTH                 480
+#define CAMERA_FRAME_HEIGHT                854
+/* 25 fps -> FPS2INTERVAL(25)=400000, which is 480x854's FrameInterval[0].
+ * Fall back to 20 fps (500000) if frames are dropped on the BULK pipe. */
+#define CAMERA_FRAME_FPS                    25
+#define CAMERA_UVC_BUFFER_SIZE      (256 * 1024)
+#define CAMERA_CONNECT_TIMEOUT_MS         15000
+#define CAMERA_FRAME_STALE_MS              1500
+/* RGB888 decode downscale denominator: 4 yields a 120x213 working image.
+ * 480x854 decodes ~550 ms/frame at scale 2 (~1.7 fps); scale 4 trades some
+ * line resolution for a usable frame rate. */
+#define CAMERA_DECODE_SCALE                   4
+
+/* MG90S is intentionally stationary in task 2. Fill this only if software
+ * centering is added later; -1 means the servo is not driven by firmware. */
+#define CAMERA_PAN_SERVO_GPIO               (-1)
+
+/* Vision segmentation and line geometry (processed image is 120x213). */
+#define VISION_SCAN_ROW_COUNT                  6
+#define VISION_ROI_TOP_PERCENT                35
+#define VISION_ROI_BOTTOM_PERCENT             92
+#define VISION_BLACK_MARGIN                   24
+#define VISION_MIN_LINE_WIDTH_PERCENT          1
+#define VISION_MAX_LINE_WIDTH_PERCENT         38
+#define VISION_FINISH_WIDTH_PERCENT           70
+#define VISION_LINE_CONFIDENCE_MIN            450
+#define VISION_REACQUIRE_CONFIDENCE_MIN       600
+#define VISION_REACQUIRE_ERROR_MAX            100
+#define VISION_REACQUIRE_FRAMES                 3
+#define VISION_CENTERED_FRAMES                  5
+
+/* Camera line-following output; commands remain in -1000..1000. */
+#define VISION_BASE_FORWARD                  120
+#define VISION_MIN_FORWARD                    70
+#define VISION_ERROR_SLOWDOWN                 55
+#define VISION_KP_NUM                        340
+#define VISION_KP_DEN                       1000
+#define VISION_KD_NUM                         55
+#define VISION_KD_DEN                       1000
+#define VISION_HEADING_GAIN                  120
+#define VISION_TURN_LIMIT                    260
+#define VISION_CORNER_HEADING_THRESHOLD      420
+#define VISION_CORNER_FORWARD                 65
+#define VISION_LOST_GRACE_MS                 450
+#define VISION_LOST_SEARCH_MS               1200
+#define VISION_LOST_TURN                     120
+#define VISION_FINISH_CONFIRM_FRAMES           3
 
 /* HC-SR04 ultrasonic ranger. ECHO is a 5 V signal: use a divider/level shifter. */
 #define ULTRASONIC_TRIG_GPIO         14
@@ -115,16 +163,21 @@
 #define AVOID_SENSOR_STALE_MS           500
 
 #define AVOID_BRAKE_MS                  100
+#define AVOID_REVERSE_SPEED             110
+#define AVOID_REVERSE_COUNTS            300
 #define AVOID_LATERAL_SPEED             120
+#define AVOID_ALIGN_LATERAL_SPEED        65
+#define AVOID_ALIGN_CORRECTION_SPEED     50
 #define AVOID_FORWARD_SPEED             140
 #define AVOID_LEFT_MIN_COUNTS           240
 #define AVOID_LEFT_CLEARANCE_MS          250
 #define AVOID_LEFT_MAX_COUNTS          2600
 #define AVOID_FORWARD_TARGET_COUNTS    1000
 #define AVOID_RIGHT_EXTRA_COUNTS        600
+#define AVOID_RIGHT_MAX_COUNTS         3600
 #define AVOID_LINE_CENTERED_MS           30
 #define AVOID_MOTION_TIMEOUT_MS        6000
-#define AVOID_STALL_TIMEOUT_MS          500
+#define AVOID_STALL_TIMEOUT_MS         1000
 #define AVOID_STALL_MIN_COUNTS            2
 
 /* Per-wheel encoder PI loop used only while lateral motion is requested.
@@ -138,8 +191,8 @@
 #define DRIVE_TARGET_CPS_PER_COMMAND_NUM     2
 #define DRIVE_TARGET_CPS_PER_COMMAND_DEN     1
 #define DRIVE_LATERAL_MIN_ACTIVE_PWM       260
-#define DRIVE_LEFT_STRAFE_MIN_ACTIVE_PWM   100
-#define DRIVE_RIGHT_STRAFE_MIN_ACTIVE_PWM   90
+#define DRIVE_LEFT_STRAFE_MIN_ACTIVE_PWM   180
+#define DRIVE_RIGHT_STRAFE_MIN_ACTIVE_PWM   160
 #define DRIVE_APPROACH_STARTUP_PWM         180
 #define DRIVE_APPROACH_MIN_ACTIVE_PWM      100
 #define DRIVE_FORWARD_MIN_ACTIVE_PWM       180
@@ -152,13 +205,11 @@
 
 /* ------------------------------------------------------------------ */
 /* LQ_TFT18SPI V3.3 1.8" SPI TFT dashboard (ST7735S, 128x160, IPS).    */
-/* Car wiring: CS=36 SCK=35 SDI(MOSI)=45 D/C=21 RST=20, VCC=3.3V.      */
-/* GPIO20 is shared with the USB-Serial-JTAG secondary console; the    */
-/* LCD driver reclaims it at init, so flash/log through the UART port. */
-#define LCD_CS_GPIO                 20
-#define LCD_SCK_GPIO                19
-#define LCD_SDI_GPIO                45  /* SPI MOSI, panel SDI pin */
-#define LCD_DC_GPIO                 21
+/* Task-2 wiring leaves GPIO19/20 exclusively available for USB UVC.   */
+#define LCD_CS_GPIO                  9
+#define LCD_SCK_GPIO                10
+#define LCD_SDI_GPIO                11  /* SPI MOSI, panel SDI pin */
+#define LCD_DC_GPIO                 12
 #define LCD_RST_GPIO                38
 #define LCD_BLK_GPIO                (-1) /* backlight pin, -1 = hardwired on */
 
