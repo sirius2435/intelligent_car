@@ -2,6 +2,7 @@
 #include "drive.h"
 #include "encoder.h"
 #include "infrared_sensor.h"
+#include "lcd_monitor.h"
 #include "line_follow.h"
 #include "obstacle_avoidance.h"
 #include "ultrasonic.h"
@@ -67,6 +68,12 @@ void app_main(void)
                  esp_err_to_name(result));
         ESP_ERROR_CHECK_WITHOUT_ABORT(drive_stop());
         return;
+    }
+
+    result = lcd_monitor_start();
+    if (result != ESP_OK) {
+        /* The dashboard is optional; the car keeps driving without it. */
+        ESP_LOGW(TAG, "LCD dashboard disabled: %s", esp_err_to_name(result));
     }
 
     ESP_LOGW(TAG, "Line following starts in %d ms; keep the car safely positioned",

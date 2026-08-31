@@ -149,3 +149,42 @@
 #define DRIVE_SPEED_KI_NUM                   1
 #define DRIVE_SPEED_KI_DEN                   4
 #define DRIVE_SPEED_INTEGRAL_LIMIT        1200
+
+/* ------------------------------------------------------------------ */
+/* LQ_TFT18SPI V3.3 1.8" SPI TFT dashboard (ST7735S, 128x160, IPS).    */
+/* Car wiring: CS=36 SCK=35 SDI(MOSI)=45 D/C=21 RST=20, VCC=3.3V.      */
+/* GPIO20 is shared with the USB-Serial-JTAG secondary console; the    */
+/* LCD driver reclaims it at init, so flash/log through the UART port. */
+#define LCD_CS_GPIO                 20
+#define LCD_SCK_GPIO                19
+#define LCD_SDI_GPIO                45  /* SPI MOSI, panel SDI pin */
+#define LCD_DC_GPIO                 21
+#define LCD_RST_GPIO                38
+#define LCD_BLK_GPIO                (-1) /* backlight pin, -1 = hardwired on */
+
+#define LCD_SPI_HOST                SPI2_HOST /* GPIO matrix routes any pins */
+#define LCD_CLOCK_HZ                (10 * 1000 * 1000) /* jumper wiring: keep <= 40 MHz */
+#define LCD_PANEL_WIDTH             128
+#define LCD_PANEL_HEIGHT            160
+
+/* Panel tuning, per-module differences (change only if the picture is wrong):
+ * - shifted picture: try LCD_X_OFFSET 2..3, LCD_Y_OFFSET 1..3
+ * - colors look negative: LCD_INVERT_COLORS 0
+ * - red and blue swapped: LCD_SWAP_RB 1
+ * - LCD_ROTATION: 0 = native portrait (dashboard layout assumes this). */
+#define LCD_X_OFFSET                0
+#define LCD_Y_OFFSET                0
+#define LCD_ROTATION                0
+#define LCD_INVERT_COLORS           1 /* IPS panel */
+#define LCD_SWAP_RB                 0
+
+/* Speed display calibration: encoder counts per output-shaft revolution.
+ * Default assumes 13-line Hall encoder x 4 quadrature x 30:1 gearbox.
+ * Calibrate: lift the car, rotate one wheel exactly one full turn by hand
+ * and read the encoder delta in the serial log; put that number here. */
+#define WHEEL_COUNTS_PER_REV        1560
+
+/* Dashboard refresh period; speed is averaged over this window and the
+ * distance value is the median of the last N valid HC-SR04 readings. */
+#define LCD_MONITOR_PERIOD_MS       200
+#define LCD_MONITOR_DISTANCE_MEDIAN 5
