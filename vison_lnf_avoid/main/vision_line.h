@@ -8,8 +8,12 @@
 extern "C" {
 #endif
 
+#define VISION_RESULT_SCAN_ROWS 6U
+
 /* lateral_error and heading_error are normalized to -1000..1000.
- * Positive means the visible path is to the car's right. */
+ * Positive means the visible path is to the car's right. scan_y and
+ * scan_center_x use the corrected logical image coordinates shown by the
+ * Wi-Fi viewer; scan_valid_mask bit N marks row N as having a selected run. */
 typedef struct {
     bool frame_valid;
     bool line_found;
@@ -20,6 +24,11 @@ typedef struct {
     unsigned confidence;
     unsigned valid_rows;
     unsigned line_width_pixels;
+    uint16_t image_width;
+    uint16_t image_height;
+    uint16_t scan_y[VISION_RESULT_SCAN_ROWS];
+    uint16_t scan_center_x[VISION_RESULT_SCAN_ROWS];
+    uint8_t scan_valid_mask;
     uint32_t sequence;
     int64_t timestamp_us;
 } vision_result_t;

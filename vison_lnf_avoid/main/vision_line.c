@@ -5,6 +5,10 @@
 
 #include "board_config.h"
 
+#if VISION_SCAN_ROW_COUNT != VISION_RESULT_SCAN_ROWS
+#error "VISION_SCAN_ROW_COUNT must match VISION_RESULT_SCAN_ROWS"
+#endif
+
 typedef struct {
     bool valid;
     int center;
@@ -31,13 +35,25 @@ static uint8_t pixel_luma(const uint8_t *pixel)
                       (unsigned)pixel[2] * 29U) >> 8U);
 }
 
+static const uint8_t *row_pixel(const uint8_t *row,
+                                unsigned width,
+                                unsigned logical_x)
+{
+#if CAMERA_FLIP_HORIZONTAL
+    const unsigned source_x = width - 1U - logical_x;
+#else
+    const unsigned source_x = logical_x;
+#endif
+    return row + source_x * 3U;
+}
+
 static row_measurement_t measure_row(const uint8_t *row,
                                      unsigned width,
                                      int expected_center)
 {
     uint32_t luma_sum = 0;
     for (unsigned x = 0; x < width; ++x) {
-        luma_sum += pixel_luma(row + x * 3U);
+        luma_sum += pixel_luma(row_pixel(row, width, x));
     }
     const int mean = width == 0 ? 0 : (int)(luma_sum / width);
     const int threshold = clamp_int(mean - VISION_BLACK_MARGIN, 12, 220);
@@ -51,7 +67,8 @@ static row_measurement_t measure_row(const uint8_t *row,
     unsigned run_start = 0;
     bool in_run = false;
     for (unsigned x = 0; x <= width; ++x) {
-        const bool dark = x < width && pixel_luma(row + x * 3U) <= threshold;
+        const bool dark = x < width &&
+            pixel_luma(row_pixel(row, width, x)) <= threshold;
         if (dark) {
             ++measurement.dark_pixels;
             if (!in_run) {
@@ -95,6 +112,8 @@ void vision_line_analyze_rgb888(const uint8_t *rgb,
         stride_bytes < width * 3U) {
         return;
     }
+    result->image_width = (uint16_t)width;
+    result->image_height = (uint16_t)height;
 
     const unsigned roi_top = height * VISION_ROI_TOP_PERCENT / 100U;
     const unsigned roi_bottom = height * VISION_ROI_BOTTOM_PERCENT / 100U;
@@ -117,9 +136,20 @@ void vision_line_analyze_rgb888(const uint8_t *rgb,
      * with the line already under the car rather than a remote dark object. */
     for (unsigned index = 0; index < VISION_SCAN_ROW_COUNT; ++index) {
         const unsigned span = roi_bottom - roi_top;
-        const unsigned y = roi_bottom - 1U -
+        const unsigned logical_y = roi_bottom - 1U -
             index * (span - 1U) / (VISION_SCAN_ROW_COUNT - 1U);
-        rows[index] = measure_row(rgb + y * stride_bytes, width, expected_center);
+        result->scan_y[index] = (uint16_t)logical_y;
+#if CAMERA_FLIP_VERTICAL
+        const unsigned source_y = height - 1U - logical_y;
+#else
+        const unsigned source_y = logical_y;
+#endif
+        rows[index] = measure_row(rgb + source_y * stride_bytes,
+                                  width, expected_center);
+        if (rows[index].valid) {
+            result->scan_center_x[index] = (uint16_t)rows[index].center;
+            result->scan_valid_mask |= (uint8_t)(1U << index);
+        }
         if (rows[index].longest_run * 100U >=
             width * VISION_FINISH_WIDTH_PERCENT) {
             ++finish_rows;

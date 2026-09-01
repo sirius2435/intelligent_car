@@ -37,6 +37,16 @@
 
 #define STREAM_TAG "camera_stream"
 
+#if CAMERA_FLIP_HORIZONTAL && CAMERA_FLIP_VERTICAL
+#define STREAM_IMAGE_TRANSFORM "transform:scale(-1,-1);"
+#elif CAMERA_FLIP_HORIZONTAL
+#define STREAM_IMAGE_TRANSFORM "transform:scaleX(-1);"
+#elif CAMERA_FLIP_VERTICAL
+#define STREAM_IMAGE_TRANSFORM "transform:scaleY(-1);"
+#else
+#define STREAM_IMAGE_TRANSFORM ""
+#endif
+
 static const char VIEWER_PAGE_HTML[] = R"html(<!doctype html>
 <html lang="zh">
 <head>
@@ -46,7 +56,11 @@ static const char VIEWER_PAGE_HTML[] = R"html(<!doctype html>
 <style>
 body{margin:0;background:#101418;color:#e8eef4;font:14px/1.5 system-ui,"Segoe UI",sans-serif}
 .wrap{max-width:560px;margin:0 auto;padding:12px}
-img{width:100%;background:#000;border-radius:8px;display:block;min-height:120px}
+.camera{position:relative;width:100%}
+.camera img{width:100%;background:#000;border-radius:8px;display:block;min-height:120px;)html"
+STREAM_IMAGE_TRANSFORM
+R"html(}
+.camera canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;border-radius:8px}
 h3{margin:4px 0 8px}
 .badges{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
 .b{padding:3px 10px;border-radius:14px;background:#232b33;font-size:13px}
@@ -59,7 +73,7 @@ h3{margin:4px 0 8px}
 </head>
 <body><div class="wrap">
 <h3>摄像头画面 <small style="color:#8aa" id="host"></small></h3>
-<img id="cam" alt="等待画面（需要摄像头出帧）…">
+<div class="camera"><img id="cam" alt="等待画面（需要摄像头出帧）…"><canvas id="overlay"></canvas></div>
 <div class="badges" id="badges"></div>
 <div class="kv"><span>横向误差 lateral_error（正=线在车右侧）</span><span id="lerr">-</span></div>
 <div class="bar"><i id="lmark" style="left:50%"></i></div>
@@ -69,12 +83,50 @@ h3{margin:4px 0 8px}
 <div class="kv"><span>线宽 px</span><span id="wpx">-</span></div>
 <div class="kv"><span>帧序号 / 累计丢帧 / 解码失败</span><span id="seq">-</span></div>
 <div class="kv"><span>画面年龄</span><span id="age">-</span></div>
-<p class="tip">画面是原始 MJPEG（480x854 竖排，约 5 fps，取决于解码速度）；徽标行是算法对当前帧的实时判定。MJPEG 流同一时间只支持一个客户端，另开页面仅状态可用。</p>
+<p class="tip">黄/红线是算法的6条实际扫描行；绿点是该行最终选中的黑线中心，红线表示该行没有合格黑线。青色虚线是图像几何中心。端口81的裸 MJPEG 保持相机原始方向。</p>
 </div>
 <script>
 document.getElementById('host').textContent = location.hostname;
-document.getElementById('cam').src = 'http://' + location.hostname + ':81/stream';
+const cam = document.getElementById('cam');
+const overlay = document.getElementById('overlay');
+let latestStatus = null;
+cam.src = 'http://' + location.hostname + ':81/stream';
 const B = (t, cls) => '<span class="b ' + (cls||'') + '">' + t + '</span>';
+function drawOverlay(s){
+  const w = cam.clientWidth, h = cam.clientHeight;
+  if(!w || !h || !s || !s.img_w || !s.img_h) return;
+  const dpr = window.devicePixelRatio || 1;
+  const pw = Math.max(1, Math.round(w*dpr));
+  const ph = Math.max(1, Math.round(h*dpr));
+  if(overlay.width !== pw || overlay.height !== ph){
+    overlay.width = pw; overlay.height = ph;
+  }
+  const c = overlay.getContext('2d');
+  c.setTransform(dpr,0,0,dpr,0,0);
+  c.clearRect(0,0,w,h);
+  c.save();
+  c.strokeStyle = 'rgba(40,220,255,.8)';
+  c.setLineDash([6,5]);
+  c.beginPath(); c.moveTo(w/2,0); c.lineTo(w/2,h); c.stroke();
+  c.restore();
+  const ys = s.scan_y || [], xs = s.scan_x || [];
+  for(let i=0;i<ys.length;i++){
+    const valid = ((s.scan_mask >>> i) & 1) !== 0;
+    const y = (ys[i]+0.5)*h/s.img_h;
+    c.strokeStyle = valid ? 'rgba(255,205,40,.82)' : 'rgba(255,65,65,.9)';
+    c.lineWidth = 1.5;
+    c.beginPath(); c.moveTo(0,y); c.lineTo(w,y); c.stroke();
+    c.fillStyle = valid ? '#ffe066' : '#ff5555';
+    c.font = 'bold 12px system-ui,sans-serif';
+    c.fillText('R'+i+(valid?'':' ×'),5,Math.max(12,y-3));
+    if(valid){
+      const x = (xs[i]+0.5)*w/s.img_w;
+      c.fillStyle = '#31e981';
+      c.beginPath(); c.arc(x,y,5,0,Math.PI*2); c.fill();
+      c.strokeStyle = '#062b17'; c.lineWidth = 2; c.stroke();
+    }
+  }
+}
 async function poll(){
   try{
     const r = await fetch('/status', {cache:'no-store'});
@@ -89,15 +141,19 @@ async function poll(){
     document.getElementById('lmark').style.left = ((s.lerr + 1000) / 20) + '%';
     document.getElementById('herr').textContent = s.herr;
     document.getElementById('conf').textContent = s.conf;
-    document.getElementById('rows').textContent = s.rows;
+    document.getElementById('rows').textContent = s.rows + '/6，ROI ' + s.roi_top + '–' + s.roi_bottom + '%';
     document.getElementById('wpx').textContent = s.width_px;
     document.getElementById('seq').textContent = s.seq + ' / ' + s.drop + ' / ' + s.dec_fail;
     document.getElementById('age').textContent = s.age_ms < 0 ? '从未' : (s.age_ms + ' ms 前');
+    latestStatus = s;
+    requestAnimationFrame(() => drawOverlay(s));
   }catch(e){
     document.getElementById('badges').innerHTML = B('状态获取失败', 'bad');
   }
   setTimeout(poll, 300);
 }
+cam.addEventListener('load', () => drawOverlay(latestStatus));
+window.addEventListener('resize', () => drawOverlay(latestStatus));
 poll();
 </script>
 </body></html>)html";
@@ -125,12 +181,15 @@ static esp_err_t status_handler(httpd_req_t *req)
     const int64_t age_ms = camera.last_frame_us == 0 ? -1 :
         (esp_timer_get_time() - camera.last_frame_us) / 1000LL;
 
-    char json[320];
+    char json[640];
     const int len = snprintf(json, sizeof(json),
         "{\"started\":%d,\"connected\":%d,\"frames\":%u,\"drop\":%u,"
         "\"dec_fail\":%u,\"seq\":%u,\"age_ms\":%lld,\"line\":%d,"
         "\"finish\":%d,\"corner\":%d,\"conf\":%u,\"lerr\":%d,\"herr\":%d,"
-        "\"rows\":%u,\"width_px\":%u}",
+        "\"rows\":%u,\"width_px\":%u,\"img_w\":%u,\"img_h\":%u,"
+        "\"roi_top\":%u,\"roi_bottom\":%u,\"scan_mask\":%u,"
+        "\"scan_y\":[%u,%u,%u,%u,%u,%u],"
+        "\"scan_x\":[%u,%u,%u,%u,%u,%u]}",
         camera.started ? 1 : 0,
         camera.connected ? 1 : 0,
         (unsigned)camera.received_frames,
@@ -145,7 +204,24 @@ static esp_err_t status_handler(httpd_req_t *req)
         camera.vision.lateral_error,
         camera.vision.heading_error,
         (unsigned)camera.vision.valid_rows,
-        (unsigned)camera.vision.line_width_pixels);
+        (unsigned)camera.vision.line_width_pixels,
+        (unsigned)camera.vision.image_width,
+        (unsigned)camera.vision.image_height,
+        (unsigned)VISION_ROI_TOP_PERCENT,
+        (unsigned)VISION_ROI_BOTTOM_PERCENT,
+        (unsigned)camera.vision.scan_valid_mask,
+        (unsigned)camera.vision.scan_y[0],
+        (unsigned)camera.vision.scan_y[1],
+        (unsigned)camera.vision.scan_y[2],
+        (unsigned)camera.vision.scan_y[3],
+        (unsigned)camera.vision.scan_y[4],
+        (unsigned)camera.vision.scan_y[5],
+        (unsigned)camera.vision.scan_center_x[0],
+        (unsigned)camera.vision.scan_center_x[1],
+        (unsigned)camera.vision.scan_center_x[2],
+        (unsigned)camera.vision.scan_center_x[3],
+        (unsigned)camera.vision.scan_center_x[4],
+        (unsigned)camera.vision.scan_center_x[5]);
     if (len < 0 || (size_t)len >= sizeof(json)) {
         return ESP_ERR_NO_MEM;
     }
@@ -171,8 +247,8 @@ static esp_err_t stream_handler(httpd_req_t *req)
     }
 
     esp_err_t result = ESP_OK;
-    uint8_t *frame = heap_caps_aligned_alloc(
-        16, CAMERA_UVC_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t *frame = static_cast<uint8_t *>(heap_caps_aligned_alloc(
+        16, CAMERA_UVC_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (frame == NULL) {
         (void)__atomic_sub_fetch(&s_stream_clients, 1, __ATOMIC_SEQ_CST);
         httpd_resp_set_status(req, "503 No Memory");
@@ -299,8 +375,9 @@ static esp_err_t wifi_ap_start(void)
 esp_err_t camera_stream_start(void)
 {
     static bool started;
+    static esp_err_t start_result = ESP_ERR_INVALID_STATE;
     if (started) {
-        return ESP_OK;
+        return start_result;
     }
 
     const esp_err_t wifi_result = wifi_ap_start();
@@ -308,6 +385,7 @@ esp_err_t camera_stream_start(void)
         return wifi_result;
     }
     started = true;
+    esp_err_t first_error = ESP_OK;
 
     /* Page + status server. */
     httpd_config_t page_cfg = HTTPD_DEFAULT_CONFIG();
@@ -316,20 +394,27 @@ esp_err_t camera_stream_start(void)
     page_cfg.stack_size = 6144;
     page_cfg.lru_purge_enable = true;
     httpd_handle_t page_server = NULL;
-    if (httpd_start(&page_server, &page_cfg) == ESP_OK) {
+    esp_err_t server_result = httpd_start(&page_server, &page_cfg);
+    if (server_result == ESP_OK) {
         const httpd_uri_t page_uri = {
             .uri = "/", .method = HTTP_GET, .handler = page_handler,
         };
         const httpd_uri_t status_uri = {
             .uri = "/status", .method = HTTP_GET, .handler = status_handler,
         };
-        ESP_ERROR_CHECK_WITHOUT_ABORT(
-            httpd_register_uri_handler(page_server, &page_uri));
-        ESP_ERROR_CHECK_WITHOUT_ABORT(
-            httpd_register_uri_handler(page_server, &status_uri));
+        server_result = httpd_register_uri_handler(page_server, &page_uri);
+        if (server_result == ESP_OK) {
+            server_result = httpd_register_uri_handler(page_server, &status_uri);
+        }
+        if (server_result != ESP_OK) {
+            ESP_LOGE(STREAM_TAG, "page URI registration failed: %s",
+                     esp_err_to_name(server_result));
+            first_error = server_result;
+        }
     } else {
         ESP_LOGE(STREAM_TAG, "page httpd on port %d failed",
                  STREAM_HTTP_PORT);
+        first_error = server_result;
     }
 
     /* Dedicated stream server: its handler runs until the viewer leaves. */
@@ -340,17 +425,30 @@ esp_err_t camera_stream_start(void)
     stream_cfg.stack_size = 6144;
     stream_cfg.lru_purge_enable = true;
     httpd_handle_t stream_server = NULL;
-    if (httpd_start(&stream_server, &stream_cfg) == ESP_OK) {
+    server_result = httpd_start(&stream_server, &stream_cfg);
+    if (server_result == ESP_OK) {
         const httpd_uri_t stream_uri = {
             .uri = "/stream", .method = HTTP_GET, .handler = stream_handler,
         };
-        ESP_ERROR_CHECK_WITHOUT_ABORT(
-            httpd_register_uri_handler(stream_server, &stream_uri));
-        ESP_LOGI(STREAM_TAG, "MJPEG stream ready: http://192.168.4.1:%d/stream",
-                 STREAM_MJPEG_PORT);
+        server_result = httpd_register_uri_handler(stream_server, &stream_uri);
+        if (server_result == ESP_OK) {
+            ESP_LOGI(STREAM_TAG,
+                     "MJPEG stream ready: http://192.168.4.1:%d/stream",
+                     STREAM_MJPEG_PORT);
+        } else {
+            ESP_LOGE(STREAM_TAG, "stream URI registration failed: %s",
+                     esp_err_to_name(server_result));
+            if (first_error == ESP_OK) {
+                first_error = server_result;
+            }
+        }
     } else {
         ESP_LOGE(STREAM_TAG, "stream httpd on port %d failed",
                  STREAM_MJPEG_PORT);
+        if (first_error == ESP_OK) {
+            first_error = server_result;
+        }
     }
-    return ESP_OK;
+    start_result = first_error;
+    return start_result;
 }

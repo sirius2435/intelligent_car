@@ -5,7 +5,7 @@ idf_component_register(
         "encoder.c"
         "drive.c"
         "camera_vision.c"
-        "camera_stream.c"
+        "camera_stream.cpp"
         "vision_line.c"
         "vision_follow.c"
         "ultrasonic.c"

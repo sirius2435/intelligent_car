@@ -131,17 +131,6 @@ static void vision_task(void *arg)
         const uint32_t seq = s_pending_seq;
         taskEXIT_CRITICAL(&s_status_lock);
 
-        /* Publish the untouched MJPEG payload for the HTTP stream before
-         * decoding. Try-lock: if the stream server is mid-copy, skip this
-         * frame; the next one will be published. */
-        if (s_stream_lock != NULL &&
-            xSemaphoreTake(s_stream_lock, 0) == pdTRUE) {
-            memcpy(s_stream_buffer, s_jpeg_buffer, bytes);
-            s_stream_bytes = bytes;
-            s_stream_seq = seq;
-            xSemaphoreGive(s_stream_lock);
-        }
-
         esp_jpeg_image_cfg_t decode = {
             .indata = s_jpeg_buffer,
             .indata_size = bytes,
@@ -157,6 +146,17 @@ static void vision_task(void *arg)
         if (decoded == ESP_OK && output.width > 0U && output.height > 0U) {
             vision_line_analyze_rgb888(s_rgb_buffer, output.width, output.height,
                                        (size_t)output.width * 3U, &result);
+        }
+
+        /* Publish only after analyzing this JPEG so the browser image and
+         * scan-row diagnostics refer to the same frame instead of the overlay
+         * lagging one full software-decode interval behind. */
+        if (s_stream_lock != NULL &&
+            xSemaphoreTake(s_stream_lock, pdMS_TO_TICKS(20)) == pdTRUE) {
+            memcpy(s_stream_buffer, s_jpeg_buffer, bytes);
+            s_stream_bytes = bytes;
+            s_stream_seq = seq;
+            xSemaphoreGive(s_stream_lock);
         }
 
         taskENTER_CRITICAL(&s_status_lock);

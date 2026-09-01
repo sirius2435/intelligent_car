@@ -107,14 +107,20 @@
  * line resolution for a usable frame rate. */
 #define CAMERA_DECODE_SCALE                   4
 
+/* Camera mounting correction. The current module is mounted upside down,
+ * so both axes are mirrored (equivalent to a 180-degree rotation). These
+ * flags are shared by the vision analyzer and the Wi-Fi viewer. */
+#define CAMERA_FLIP_HORIZONTAL                1
+#define CAMERA_FLIP_VERTICAL                  1
+
 /* MG90S is intentionally stationary in task 2. Fill this only if software
  * centering is added later; -1 means the servo is not driven by firmware. */
 #define CAMERA_PAN_SERVO_GPIO               (-1)
 
 /* Vision segmentation and line geometry (processed image is 120x213). */
 #define VISION_SCAN_ROW_COUNT                  6
-#define VISION_ROI_TOP_PERCENT                35
-#define VISION_ROI_BOTTOM_PERCENT             92
+#define VISION_ROI_TOP_PERCENT                40
+#define VISION_ROI_BOTTOM_PERCENT             70
 #define VISION_BLACK_MARGIN                   24
 #define VISION_MIN_LINE_WIDTH_PERCENT          1
 #define VISION_MAX_LINE_WIDTH_PERCENT         38
@@ -126,15 +132,15 @@
 #define VISION_CENTERED_FRAMES                  5
 
 /* Camera line-following output; commands remain in -1000..1000. */
-#define VISION_BASE_FORWARD                  120
-#define VISION_MIN_FORWARD                    70
-#define VISION_ERROR_SLOWDOWN                 55
+#define VISION_BASE_FORWARD                  160
+#define VISION_MIN_FORWARD                   100
+#define VISION_ERROR_SLOWDOWN                 20
 #define VISION_KP_NUM                        340
 #define VISION_KP_DEN                       1000
 #define VISION_KD_NUM                         55
 #define VISION_KD_DEN                       1000
 #define VISION_HEADING_GAIN                  120
-#define VISION_TURN_LIMIT                    260
+#define VISION_TURN_LIMIT                    250
 #define VISION_CORNER_HEADING_THRESHOLD      420
 #define VISION_CORNER_FORWARD                 65
 #define VISION_LOST_GRACE_MS                 450
@@ -185,7 +191,8 @@
  * Each strafe direction gets one high feed-forward pulse until the first
  * speed sample, then it may fall below the old 260 PWM floor.  The run log
  * showed that the wheels were still several times faster than their targets
- * at PWM 260, so left strafe runs down to 100 PWM and right strafe to 90.
+ * at PWM 260. The current floor calibration is 180 for left strafe and 160
+ * for right strafe.
  */
 #define DRIVE_SPEED_CONTROL_PERIOD_MS       50
 #define DRIVE_TARGET_CPS_PER_COMMAND_NUM     2

@@ -103,17 +103,17 @@ int main(void)
     CHECK(abs(command.right) < 260);
     CHECK(abs(command.rear) < 260);
 
-    /* Right strafe keeps the same 260 startup kick, then drops to its own
-       90 PWM running floor after the first speed sample. */
+    /* Right strafe keeps the same 260 startup kick, then drops to its current
+       160 PWM running floor after the first speed sample. */
     drive_set_motion(0, 0, 0, NULL);
     drive_set_motion_feedback(0, -120, 0, 10, 0, 0, 0, &command);
     CHECK(command.left == 286);
     CHECK(command.right == -286);
     CHECK(command.rear == 312);
     drive_set_motion_feedback(0, -120, 0, 50, -30, 30, -30, &command);
-    CHECK(abs(command.left) == 90);
-    CHECK(abs(command.right) == 90);
-    CHECK(abs(command.rear) == 90);
+    CHECK(abs(command.left) == DRIVE_RIGHT_STRAFE_MIN_ACTIVE_PWM);
+    CHECK(abs(command.right) == DRIVE_RIGHT_STRAFE_MIN_ACTIVE_PWM);
+    CHECK(abs(command.rear) == DRIVE_RIGHT_STRAFE_MIN_ACTIVE_PWM);
 
     drive_feedback_status_t feedback;
     drive_get_feedback_status(&feedback);
