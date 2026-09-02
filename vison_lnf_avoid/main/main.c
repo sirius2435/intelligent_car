@@ -4,9 +4,10 @@
 #include "drive.h"
 #include "encoder.h"
 #include "lcd_monitor.h"
+#include "line_follow.h"
 #include "obstacle_avoidance.h"
+#include "pseudo_infrared.h"
 #include "ultrasonic.h"
-#include "vision_follow.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -75,12 +76,13 @@ void app_main(void)
     require_ok("camera_vision_start", camera_vision_start());
     wait_for_first_camera_frame();
 
-    ESP_LOGW(TAG, "task 2 starts in %d ms; infrared power must be disconnected",
+    ESP_LOGW(TAG, "line following starts in %d ms; infrared board is "
+             "disconnected, vision is converted to a pseudo-infrared mask",
              LINE_START_DELAY_MS);
     vTaskDelay(pdMS_TO_TICKS(LINE_START_DELAY_MS));
 
-    vision_follow_controller_t follower;
-    vision_follow_init(&follower);
+    line_follow_controller_t controller;
+    line_follow_init(&controller);
     obstacle_avoidance_controller_t avoidance;
     obstacle_avoidance_init(&avoidance);
 
@@ -121,34 +123,39 @@ void app_main(void)
             locked = true;
         }
 
+        infrared_sensor_state_t sensor = {0};
+        require_ok("pseudo_infrared_sample",
+                   pseudo_infrared_sample(&camera.vision, &sensor));
+
         obstacle_avoidance_result_t avoid = obstacle_avoidance_update(
-            &avoidance, &ultrasonic, &camera.vision, elapsed_ms,
+            &avoidance, &ultrasonic, sensor.black_mask, elapsed_ms,
             left_count, right_count, rear_count);
         if (avoid.just_completed) {
-            vision_follow_init(&follower);
+            line_follow_init(&controller);
         }
 
-        vision_follow_output_t follow = {
-            .state = follower.state,
-        };
         int forward = 0;
         int lateral = 0;
         int turn = 0;
-        if (!locked && avoid.active) {
+        line_follow_result_t control = {
+            .state = controller.state,
+        };
+        if (avoid.active) {
             forward = avoid.forward;
             lateral = avoid.lateral;
             turn = avoid.turn;
         } else if (!locked) {
-            const bool finish_enabled =
-                avoidance.state == AVOIDANCE_COMPLETE;
-            follow = vision_follow_update(&follower, &camera.vision,
-                                          finish_enabled, elapsed_ms);
-            forward = follow.forward;
-            turn = follow.turn;
+            control = line_follow_update(&controller, sensor.black_mask,
+                                         elapsed_ms, left_count, right_count);
+            forward = control.forward;
+            turn = control.turn;
             if (forward > avoid.tracking_forward_limit) {
                 forward = avoid.tracking_forward_limit;
             }
-            if (follow.finished || follow.state == VISION_FOLLOW_FAULT_STOP) {
+            /* Pseudo-infrared reports a confirmed finish marker as all-black,
+             * so the infrared state machine stops on it. Treat that terminal
+             * state the same way as a fault: lock and stop. */
+            if (control.state == LINE_FOLLOW_STOPPED) {
                 locked = true;
                 forward = 0;
                 turn = 0;
@@ -165,41 +172,37 @@ void app_main(void)
         esp_err_t drive_result;
         if (locked) {
             drive_result = drive_stop();
-        } else if (avoid.active &&
-                   avoid.state == AVOIDANCE_FORWARD_PASS) {
+        } else if (avoid.active && avoid.state == AVOIDANCE_FORWARD_PASS) {
             drive_result = drive_set_forward_feedback(
                 forward, elapsed_ms, left_count, right_count, &wheels);
-        } else if (lateral != 0) {
-            drive_result = drive_set_motion_feedback(
-                forward, lateral, turn, elapsed_ms,
-                left_count, right_count, rear_count, &wheels);
         } else if (!avoid.active && avoid.slow_approach && forward > 0) {
             drive_result = drive_set_approach_feedback(
                 forward, turn, elapsed_ms, left_count, right_count, &wheels);
         } else {
-            drive_result = drive_set_motion(forward, lateral, turn, &wheels);
+            drive_result = drive_set_motion_feedback(
+                forward, lateral, turn, elapsed_ms,
+                left_count, right_count, rear_count, &wheels);
         }
         require_ok("drive command", drive_result);
 
         log_elapsed_ms += elapsed_ms;
         if (log_elapsed_ms >= LINE_LOG_PERIOD_MS) {
+            char display[5];
+            pseudo_infrared_format(sensor.black_mask, display);
             ESP_LOGI(TAG,
-                     "follow=%s avoid=%s lock=%d motion=[%d,%d,%d] "
+                     "follow=%s avoid=%s lock=%d sensor=%s motion=[%d,%d,%d] "
                      "vision=[line=%d finish=%d conf=%u err=%d head=%d rows=%u "
-                     "seq=%u age=%lldms drop=%u] range=[%s,%umm] "
-                     "enc=[%d,%d,%d] progress=%lld",
-                     vision_follow_state_name(follow.state),
+                     "seq=%u age=%lldms] range=[%s,%umm] enc=[%d,%d,%d]",
+                     line_follow_state_name(control.state),
                      obstacle_avoidance_state_name(avoid.state), locked,
-                     forward, lateral, turn,
+                     display, forward, lateral, turn,
                      camera.vision.line_found, camera.vision.finish_marker,
                      camera.vision.confidence, camera.vision.lateral_error,
                      camera.vision.heading_error, camera.vision.valid_rows,
                      (unsigned)camera.vision.sequence, (long long)frame_age_ms,
-                     (unsigned)camera.dropped_frames,
                      ultrasonic_status_name(ultrasonic.status),
                      (unsigned)ultrasonic.distance_mm,
-                     left_count, right_count, rear_count,
-                     (long long)avoidance.progress_counts);
+                     left_count, right_count, rear_count);
             log_elapsed_ms = 0;
         }
 

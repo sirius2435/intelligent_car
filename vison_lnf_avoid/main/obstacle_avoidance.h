@@ -4,7 +4,6 @@
 #include <stdint.h>
 
 #include "ultrasonic.h"
-#include "vision_line.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,11 +12,9 @@ extern "C" {
 typedef enum {
     AVOIDANCE_ARMED = 0,
     AVOIDANCE_BRAKE,
-    AVOIDANCE_REVERSE,
     AVOIDANCE_STRAFE_LEFT,
     AVOIDANCE_FORWARD_PASS,
     AVOIDANCE_STRAFE_RIGHT_FIND_LINE,
-    AVOIDANCE_STRAFE_RIGHT_ALIGN_LINE,
     AVOIDANCE_COMPLETE,
     AVOIDANCE_FAULT_STOP,
 } obstacle_avoidance_state_t;
@@ -39,10 +36,6 @@ typedef struct {
     int64_t outbound_lateral_counts;
     uint32_t stall_ms;
     uint32_t centered_ms;
-    uint32_t last_vision_sequence;
-    unsigned line_confirm_count;
-    unsigned center_confirm_count;
-    int align_lateral_direction;
 } obstacle_avoidance_controller_t;
 
 typedef struct {
@@ -61,7 +54,7 @@ void obstacle_avoidance_init(obstacle_avoidance_controller_t *controller);
 obstacle_avoidance_result_t obstacle_avoidance_update(
     obstacle_avoidance_controller_t *controller,
     const ultrasonic_reading_t *ultrasonic,
-    const vision_result_t *vision,
+    uint8_t infrared_black_mask,
     uint32_t elapsed_ms,
     int left_count,
     int right_count,

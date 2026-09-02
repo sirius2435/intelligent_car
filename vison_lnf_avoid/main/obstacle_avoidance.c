@@ -1,9 +1,9 @@
 #include "obstacle_avoidance.h"
 
 #include <limits.h>
-#include <stdlib.h>
 
 #include "board_config.h"
+#include "infrared_sensor.h"
 
 static uint32_t add_saturated(uint32_t value, uint32_t increment)
 {
@@ -34,6 +34,15 @@ static int64_t forward_progress(const obstacle_avoidance_controller_t *controlle
            abs_delta(right_count, controller->start_right_count);
 }
 
+static bool line_is_centered(uint8_t mask)
+{
+    mask &= IR_ALL_BLACK_MASK;
+    return mask == IR_CHANNEL_3_MASK ||
+           mask == IR_CHANNEL_2_MASK ||
+           mask == (IR_CHANNEL_3_MASK | IR_CHANNEL_2_MASK) ||
+           mask == IR_ALL_BLACK_MASK;
+}
+
 static void begin_motion_stage(obstacle_avoidance_controller_t *controller,
                                obstacle_avoidance_state_t state,
                                int left_count,
@@ -49,9 +58,6 @@ static void begin_motion_stage(obstacle_avoidance_controller_t *controller,
     controller->last_motion_counts = 0;
     controller->stall_ms = 0;
     controller->centered_ms = 0;
-    controller->line_confirm_count = 0;
-    controller->center_confirm_count = 0;
-    controller->align_lateral_direction = -1;
 }
 
 static bool motion_failed(obstacle_avoidance_controller_t *controller,
@@ -82,9 +88,6 @@ static obstacle_avoidance_result_t result_for(
         .state_changed = old_state != controller->state,
     };
     switch (controller->state) {
-    case AVOIDANCE_REVERSE:
-        result.forward = -AVOID_REVERSE_SPEED;
-        break;
     case AVOIDANCE_STRAFE_LEFT:
         result.lateral = AVOID_LATERAL_SPEED;
         break;
@@ -93,10 +96,6 @@ static obstacle_avoidance_result_t result_for(
         break;
     case AVOIDANCE_STRAFE_RIGHT_FIND_LINE:
         result.lateral = -AVOID_LATERAL_SPEED;
-        break;
-    case AVOIDANCE_STRAFE_RIGHT_ALIGN_LINE:
-        result.lateral = controller->align_lateral_direction < 0 ?
-            -AVOID_ALIGN_LATERAL_SPEED : AVOID_ALIGN_CORRECTION_SPEED;
         break;
     default:
         break;
@@ -130,13 +129,13 @@ void obstacle_avoidance_init(obstacle_avoidance_controller_t *controller)
 obstacle_avoidance_result_t obstacle_avoidance_update(
     obstacle_avoidance_controller_t *controller,
     const ultrasonic_reading_t *ultrasonic,
-    const vision_result_t *vision,
+    uint8_t infrared_black_mask,
     uint32_t elapsed_ms,
     int left_count,
     int right_count,
     int rear_count)
 {
-    if (controller == NULL || ultrasonic == NULL || vision == NULL) {
+    if (controller == NULL || ultrasonic == NULL) {
         obstacle_avoidance_result_t invalid = {
             .state = AVOIDANCE_FAULT_STOP,
             .active = true,
@@ -190,23 +189,8 @@ obstacle_avoidance_result_t obstacle_avoidance_update(
     controller->stage_ms = add_saturated(controller->stage_ms, elapsed_ms);
     if (controller->state == AVOIDANCE_BRAKE) {
         if (controller->stage_ms >= AVOID_BRAKE_MS) {
-            begin_motion_stage(controller, AVOIDANCE_REVERSE,
-                               left_count, right_count, rear_count);
-        }
-        return result_for(controller, old_state);
-    }
-
-    if (controller->state == AVOIDANCE_REVERSE) {
-        controller->progress_counts =
-            forward_progress(controller, left_count, right_count);
-        if (controller->progress_counts >= AVOID_REVERSE_COUNTS) {
             begin_motion_stage(controller, AVOIDANCE_STRAFE_LEFT,
                                left_count, right_count, rear_count);
-            return result_for(controller, old_state);
-        }
-        if (motion_failed(controller, elapsed_ms,
-                          AVOID_REVERSE_COUNTS * 2)) {
-            return fault_result(controller, old_state);
         }
         return result_for(controller, old_state);
     }
@@ -269,54 +253,23 @@ obstacle_avoidance_result_t obstacle_avoidance_update(
 
     controller->progress_counts =
         all_wheel_progress(controller, left_count, right_count, rear_count);
-    const bool new_vision = vision->sequence != 0U &&
-                            vision->sequence != controller->last_vision_sequence;
-    if (new_vision) {
-        controller->last_vision_sequence = vision->sequence;
+    const int64_t minimum_return = controller->outbound_lateral_counts / 2;
+    if (controller->progress_counts >= minimum_return &&
+        line_is_centered(infrared_black_mask)) {
+        controller->centered_ms =
+            add_saturated(controller->centered_ms, elapsed_ms);
+    } else {
+        controller->centered_ms = 0;
     }
-    const bool reliable_line = vision->frame_valid && vision->line_found &&
-        vision->confidence >= VISION_REACQUIRE_CONFIDENCE_MIN &&
-        !vision->finish_marker;
-
-    if (controller->state == AVOIDANCE_STRAFE_RIGHT_FIND_LINE) {
-        const int64_t minimum_return = controller->outbound_lateral_counts / 4;
-        if (new_vision && controller->progress_counts >= minimum_return) {
-            controller->line_confirm_count = reliable_line ?
-                controller->line_confirm_count + 1U : 0U;
-        }
-        if (controller->line_confirm_count >= VISION_REACQUIRE_FRAMES) {
-            begin_motion_stage(controller, AVOIDANCE_STRAFE_RIGHT_ALIGN_LINE,
-                               left_count, right_count, rear_count);
-            controller->last_vision_sequence = vision->sequence;
-            controller->align_lateral_direction =
-                vision->lateral_error < -VISION_REACQUIRE_ERROR_MAX ? 1 : -1;
-            return result_for(controller, old_state);
-        }
-        if (motion_failed(controller, elapsed_ms, AVOID_RIGHT_MAX_COUNTS)) {
-            return fault_result(controller, old_state);
-        }
-        return result_for(controller, old_state);
-    }
-
-    if (new_vision) {
-        const bool centered = reliable_line &&
-            abs(vision->lateral_error) <= VISION_REACQUIRE_ERROR_MAX;
-        controller->center_confirm_count = centered ?
-            controller->center_confirm_count + 1U : 0U;
-        if (reliable_line && !centered) {
-            controller->align_lateral_direction =
-                vision->lateral_error > 0 ? -1 : 1;
-        }
-    }
-    if (controller->center_confirm_count >= VISION_CENTERED_FRAMES) {
+    if (controller->centered_ms >= AVOID_LINE_CENTERED_MS) {
         controller->state = AVOIDANCE_COMPLETE;
         obstacle_avoidance_result_t result = result_for(controller, old_state);
         result.just_completed = true;
-        result.lateral = 0;
         return result;
     }
-    if (controller->stage_ms >= AVOID_MOTION_TIMEOUT_MS ||
-        controller->progress_counts > AVOID_RIGHT_EXTRA_COUNTS) {
+    if (motion_failed(controller, elapsed_ms,
+                      controller->outbound_lateral_counts +
+                      AVOID_RIGHT_EXTRA_COUNTS)) {
         return fault_result(controller, old_state);
     }
     return result_for(controller, old_state);
@@ -329,16 +282,12 @@ const char *obstacle_avoidance_state_name(obstacle_avoidance_state_t state)
         return "ARMED";
     case AVOIDANCE_BRAKE:
         return "BRAKE";
-    case AVOIDANCE_REVERSE:
-        return "REVERSE";
     case AVOIDANCE_STRAFE_LEFT:
         return "STRAFE_LEFT";
     case AVOIDANCE_FORWARD_PASS:
         return "FORWARD_PASS";
     case AVOIDANCE_STRAFE_RIGHT_FIND_LINE:
         return "STRAFE_RIGHT_FIND_LINE";
-    case AVOIDANCE_STRAFE_RIGHT_ALIGN_LINE:
-        return "STRAFE_RIGHT_ALIGN_LINE";
     case AVOIDANCE_COMPLETE:
         return "COMPLETE";
     case AVOIDANCE_FAULT_STOP:

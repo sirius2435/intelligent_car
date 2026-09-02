@@ -1,7 +1,18 @@
 #pragma once
 
-/* Task 2 disconnects the infrared board. Keep placeholders so the old
- * infrared-only sources can still be used by a separate build if required. */
+/*
+ * Pseudo-infrared build: the four-channel infrared board is disconnected, so
+ * no GPIOs are read. main/pseudo_infrared.c converts the camera line result
+ * into the same four-bit black mask instead.
+ *
+ * Channel ordering is authoritative from the reference infrared project
+ * (lnf_avoid), viewed from the front of the car:
+ *
+ *       car left                         car right
+ *       channel 4  channel 3  channel 2  channel 1
+ *
+ * Bit 0 = channel 1 (car right), bit 3 = channel 4 (car left).
+ */
 #define IR_CHANNEL_4_GPIO  (-1)
 #define IR_CHANNEL_3_GPIO  (-1)
 #define IR_CHANNEL_2_GPIO  (-1)
@@ -62,7 +73,11 @@
 #define LINE_TURN_LIMIT            250
 
 #define LINE_CORNER_ARM_MS              30
-#define LINE_CORNER_CONFIRM_WINDOW_MS  120
+/* Pseudo-infrared masks update once per camera frame (~100-200 ms at scale 8),
+ * so the corner-confirm window must exceed one frame interval. The original
+ * 120 ms (10 ms infrared sampling) would cancel the corner before the next
+ * frame's all-white arrives. */
+#define LINE_CORNER_CONFIRM_WINDOW_MS  450
 #define LINE_CORNER_APPROACH_FORWARD   120
 #define LINE_CORNER_ROTATE_FORWARD       0
 #define LINE_CORNER_ROTATE_TURN         200
@@ -102,10 +117,12 @@
 #define CAMERA_UVC_BUFFER_SIZE      (256 * 1024)
 #define CAMERA_CONNECT_TIMEOUT_MS         15000
 #define CAMERA_FRAME_STALE_MS              1500
-/* RGB888 decode downscale denominator: 4 yields a 120x213 working image.
- * 480x854 decodes ~550 ms/frame at scale 2 (~1.7 fps); scale 4 trades some
- * line resolution for a usable frame rate. */
-#define CAMERA_DECODE_SCALE                   4
+/* RGB888 decode downscale denominator: 8 yields a 60x106 working image.
+ * 480x854 decodes ~550 ms/frame at scale 2 (~1.7 fps); scale 8 throws away
+ * more high-frequency detail and raises the frame rate. The pseudo-infrared
+ * four-zone mapping only needs coarse lateral position, so 60 pixels wide
+ * is sufficient. */
+#define CAMERA_DECODE_SCALE                   8
 
 /* Camera mounting correction. The current module is mounted upside down,
  * so both axes are mirrored (equivalent to a 180-degree rotation). These
@@ -183,7 +200,7 @@
 #define AVOID_RIGHT_MAX_COUNTS         3600
 #define AVOID_LINE_CENTERED_MS           30
 #define AVOID_MOTION_TIMEOUT_MS        6000
-#define AVOID_STALL_TIMEOUT_MS         1000
+#define AVOID_STALL_TIMEOUT_MS          500
 #define AVOID_STALL_MIN_COUNTS            2
 
 /* Per-wheel encoder PI loop used only while lateral motion is requested.
@@ -191,15 +208,15 @@
  * Each strafe direction gets one high feed-forward pulse until the first
  * speed sample, then it may fall below the old 260 PWM floor.  The run log
  * showed that the wheels were still several times faster than their targets
- * at PWM 260. The current floor calibration is 180 for left strafe and 160
+ * at PWM 260. The current floor calibration is 100 for left strafe and 90
  * for right strafe.
  */
 #define DRIVE_SPEED_CONTROL_PERIOD_MS       50
 #define DRIVE_TARGET_CPS_PER_COMMAND_NUM     2
 #define DRIVE_TARGET_CPS_PER_COMMAND_DEN     1
 #define DRIVE_LATERAL_MIN_ACTIVE_PWM       260
-#define DRIVE_LEFT_STRAFE_MIN_ACTIVE_PWM   180
-#define DRIVE_RIGHT_STRAFE_MIN_ACTIVE_PWM   160
+#define DRIVE_LEFT_STRAFE_MIN_ACTIVE_PWM   100
+#define DRIVE_RIGHT_STRAFE_MIN_ACTIVE_PWM    90
 #define DRIVE_APPROACH_STARTUP_PWM         180
 #define DRIVE_APPROACH_MIN_ACTIVE_PWM      100
 #define DRIVE_FORWARD_MIN_ACTIVE_PWM       180
