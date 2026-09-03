@@ -107,21 +107,25 @@
  * The current camera (idVendor 0x349c / idProduct 0x3307, UVC+UAC, BULK)
  * advertises only these MJPEG frame sizes:
  *   1280x720, 800x480, 640x480, 480x320, 480x854.
- * The camera is mounted in portrait orientation (wide edge vertical), so
- * request the portrait 480x854 size (frame index 5). */
+ * Recognition fps is limited by the software JPEG decode, whose cost tracks
+ * the pixel count. Request 480x320 (frame index 4) instead of the portrait
+ * 480x854: horizontal stays 480 px so the four-channel lateral clarity and
+ * geometry are unchanged (still 60 px wide at scale 8); only the vertical
+ * drops 854 -> 320 (~2.6x fewer pixels to decode). The vertical FOV is
+ * shorter, so re-verify PSEUDO_IR_SAMPLE_ROW_PERCENT via the browser overlay. */
 #define CAMERA_FRAME_WIDTH                 480
-#define CAMERA_FRAME_HEIGHT                854
-/* 25 fps -> FPS2INTERVAL(25)=400000, which is 480x854's FrameInterval[0].
- * Fall back to 20 fps (500000) if frames are dropped on the BULK pipe. */
+#define CAMERA_FRAME_HEIGHT                320
+/* 25 fps -> FPS2INTERVAL(25)=400000, which is 480x320's FrameInterval[0].
+ * Keep 25 fps: after the resolution cut the decode nearly matches the input,
+ * so a lower fps would only cap the recognition rate. */
 #define CAMERA_FRAME_FPS                    25
 #define CAMERA_UVC_BUFFER_SIZE      (256 * 1024)
 #define CAMERA_CONNECT_TIMEOUT_MS         15000
 #define CAMERA_FRAME_STALE_MS              1500
-/* RGB888 decode downscale denominator: 8 yields a 60x106 working image.
- * 480x854 decodes ~550 ms/frame at scale 2 (~1.7 fps); scale 8 throws away
- * more high-frequency detail and raises the frame rate. The pseudo-infrared
- * four-zone mapping only needs coarse lateral position, so 60 pixels wide
- * is sufficient. */
+/* RGB888 decode downscale denominator: 8 yields a 60x40 working image from
+ * 480x320. Scale 8 keeps the IDCT/output minimal; the pseudo-infrared
+ * four-zone mapping only needs the coarse 60 px lateral resolution, which is
+ * unchanged from the old 480x854 setup. */
 #define CAMERA_DECODE_SCALE                   8
 
 /* Camera mounting correction. The current module is mounted upside down,
@@ -130,15 +134,42 @@
 #define CAMERA_FLIP_HORIZONTAL                1
 #define CAMERA_FLIP_VERTICAL                  1
 
-/* MG90S is intentionally stationary in task 2. Fill this only if software
- * centering is added later; -1 means the servo is not driven by firmware. */
-#define CAMERA_PAN_SERVO_GPIO               (-1)
+/* ------------------------------------------------------------------ */
+/* Camera gimbal: two MG90S servos pan/tilt the USB camera.            */
+/* GPIOs default to -1 (NULL): camera_gimbal_init() then logs a warning */
+/* and stays disabled, so the camera remains fixed. Set both to real,   */
+/* non-conflicting output GPIOs to enable firmware centering. MG90S is  */
+/* driven at 50 Hz; ~1000-2000 us maps to 0-180 deg of shaft travel.    */
+/* Every command is clamped to the per-axis MIN/MAX degrees below so the */
+/* horn never pushes into a mechanical stop.                            */
+#define CAMERA_PAN_SERVO_GPIO              (45)
+#define CAMERA_TILT_SERVO_GPIO             (21)
+
+#define SERVO_PWM_FREQ_HZ                    50
+#define SERVO_PULSE_MIN_US                 1000  /* shaft   0 deg */
+#define SERVO_PULSE_MAX_US                 2000  /* shaft 180 deg */
+
+/* Pan (horizontal): full ~180 deg sweep, no mechanical stop reported. */
+#define CAMERA_PAN_SERVO_MIN_DEG              0
+#define CAMERA_PAN_SERVO_MAX_DEG            180
+#define CAMERA_PAN_SERVO_CENTER_DEG          80
+
+/* Tilt (vertical): ~120 deg usable. MIN is the downward mechanical stop
+ * (the chassis blocks any further down-tilt); MAX is straight up, the
+ * reported maximum. CENTER looks forward. Confirm the up/down direction
+ * on the bench and tune these three values to the real hard stops. */
+#define CAMERA_TILT_SERVO_MIN_DEG            30
+#define CAMERA_TILT_SERVO_MAX_DEG           150
+#define CAMERA_TILT_SERVO_CENTER_DEG         100
 
 /* Pseudo-infrared: fixed pixel-block sampling of the decoded RGB image.
  *
  * Four blocks stand in for the four channels of the LQ_R4CHVB infrared board.
  * They are sampled on a single row nearest the car (PSEUDO_IR_SAMPLE_ROW_PERCENT
- * of the frame height) at the four channel centers W/8, 3W/8, 5W/8, 7W/8.
+ * of the frame height) at four lateral centers given as a percent of the image
+ * width (PSEUDO_IR_CH*_CENTER_PERCENT). The two inner channels straddle the
+ * exact image centre so a dead-centre line lights BOTH of them (error 0) rather
+ * than falling into a centre gap and reading all-white / WAITING_LINE.
  * Bit 0 = channel 1 = car right, bit 3 = channel 4 = car left (authoritative
  * from the reference project lnf_avoid). A block counts as "black" when at
  * least PSEUDO_IR_BLOCK_DARK_MIN pixels fall below the row's adaptive
@@ -150,20 +181,34 @@
  *   of the car where the physical infrared board sits. Raise it to sample a
  *   row closer to the car (wider in pixels).
  * - PSEUDO_IR_BLOCK_SIZE: sampled block side in pixels. On the 60 px wide
- *   decoded image the channel pitch is 15 px, so keep the block well under
- *   that: at 6 the block spans ~7 px and the gap to the next block is ~8 px,
- *   so a line centred between two channels reads all-white (lost) and only
- *   one channel lights when the line sits on it. Larger blocks make narrow
- *   lines easier to catch but blur channel separation. Verify on the floor at
- *   low speed: (1) line on a channel lights exactly one block, (2) line
- *   between channels reads all-white, (3) the finish bar still confirms as
- *   all-black 0x0F.
+ *   decoded image at 6 the block spans ~7 px. Keep the block <= the spacing to
+ *   the neighbouring channel so channels stay separable; larger blocks make
+ *   narrow lines easier to catch but blur channel separation and can make two
+ *   adjacent channels light together. Verify on the floor at low speed:
+ *   (1) a dead-centre line lights the two inner blocks (sensor WBBW, error 0),
+ *   (2) a line offset onto one channel lights exactly that block, (3) the
+ *   finish bar still confirms as all-black 0x0F.
+ * - PSEUDO_IR_CH*_CENTER_PERCENT: lateral centre of each block as a percent of
+ *   the image width. CH2/CH3 must straddle 50 so a centred line reads error 0;
+ *   keep CH1/CH4 symmetric with them. After any change re-run the floor check
+ *   above (centred -> WBBW, off-centre -> single channel).
  * - PSEUDO_IR_BLOCK_DARK_MIN: how many dark pixels a block needs to count as
  *   "on the line". Keep at 2 after shrinking the block; raise to 3 only if
  *   two adjacent blocks still light together. */
 #define PSEUDO_IR_BLOCK_SIZE                   6
+/* Lateral block centres as a percent of the decoded image width. CH1 = car
+ * right ... CH4 = car left. The inner pair (55/45) straddles the exact centre
+ * (50) so a dead-centre line lights BOTH inner blocks -> mask_to_error gives
+ * (+1 + -1)/2 = 0 (perfectly centred) instead of dropping into a centre gap
+ * and reading all-white / WAITING_LINE. On the 60 px wide image these map to
+ * pixel centres 48, 33, 27, 12; keep CH2/CH3 symmetric about 50 and CH1/CH4
+ * symmetric about them. */
+#define PSEUDO_IR_CH1_CENTER_PERCENT          80
+#define PSEUDO_IR_CH2_CENTER_PERCENT          55
+#define PSEUDO_IR_CH3_CENTER_PERCENT          45
+#define PSEUDO_IR_CH4_CENTER_PERCENT          20
 #define PSEUDO_IR_SAMPLE_ROW_PERCENT          70
-#define PSEUDO_IR_BLACK_MARGIN                24
+#define PSEUDO_IR_BLACK_MARGIN                40
 #define PSEUDO_IR_BLOCK_DARK_MIN               2
 #define PSEUDO_IR_FINISH_WIDTH_PERCENT        70
 #define PSEUDO_IR_FINISH_CONFIRM_FRAMES        3

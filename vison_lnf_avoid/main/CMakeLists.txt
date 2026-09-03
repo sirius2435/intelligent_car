@@ -8,6 +8,7 @@ idf_component_register(
         "pseudo_infrared.c"
         "camera_vision.c"
         "camera_stream.cpp"
+        "camera_gimbal.c"
         "ultrasonic.c"
         "obstacle_avoidance.c"
         "lcd.c"

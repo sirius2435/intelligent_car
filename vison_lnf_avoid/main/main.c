@@ -1,4 +1,5 @@
 #include "board_config.h"
+#include "camera_gimbal.h"
 #include "camera_stream.h"
 #include "camera_vision.h"
 #include "drive.h"
@@ -71,6 +72,14 @@ void app_main(void)
     if (stream_result != ESP_OK) {
         ESP_LOGW(TAG, "camera stream disabled: %s",
                  esp_err_to_name(stream_result));
+    }
+
+    /* Camera gimbal (two MG90S pan/tilt). Disabled while the servo GPIOs are
+     * -1; then init() only logs and the camera stays fixed. Non-fatal. */
+    const esp_err_t gimbal_result = camera_gimbal_init();
+    if (gimbal_result != ESP_OK) {
+        ESP_LOGW(TAG, "camera gimbal unavailable: %s",
+                 esp_err_to_name(gimbal_result));
     }
 
     require_ok("camera_vision_start", camera_vision_start());

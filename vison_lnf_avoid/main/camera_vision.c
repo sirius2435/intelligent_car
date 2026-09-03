@@ -31,6 +31,10 @@
  * vision task; while that task decodes, new frames are dropped. */
 #define VISION_TASK_STACK_SIZE 8192
 #define VISION_TASK_PRIORITY   1
+/* Pin the decode to core 1: the control loop and Wi-Fi both run on core 0
+ * (see the boot log), so a dedicated core stops the CPU-heavy software JPEG
+ * decode from being preempted, which was inflating the per-frame latency. */
+#define VISION_TASK_CORE       1
 
 static const char *TAG = "camera_vision";
 
@@ -235,8 +239,10 @@ esp_err_t camera_vision_start(void)
         }
     }
 
-    if (xTaskCreate(vision_task, "vision_proc", VISION_TASK_STACK_SIZE, NULL,
-                    VISION_TASK_PRIORITY, &s_vision_task) != pdPASS) {
+    if (xTaskCreatePinnedToCore(vision_task, "vision_proc",
+                                VISION_TASK_STACK_SIZE, NULL,
+                                VISION_TASK_PRIORITY, &s_vision_task,
+                                VISION_TASK_CORE) != pdPASS) {
         ESP_LOGE(TAG, "failed to create vision task");
         return ESP_ERR_NO_MEM;
     }

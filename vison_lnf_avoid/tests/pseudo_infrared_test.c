@@ -61,29 +61,31 @@ static uint8_t sample_mask(void)
 
 static void test_four_fixed_channels(void)
 {
-    /* Channel centers: 7/8, 5/8, 3/8, 1/8 of width = 105, 75, 45, 15. */
+    /* Channel centers: 80%, 55%, 45%, 20% of width 120 = 96, 66, 54, 24. */
     clear_white();
-    fill_band(102, 108);                 /* car right -> bit 0 */
+    fill_band(94, 98);                   /* car right -> bit 0 */
     CHECK(sample_mask() == IR_CHANNEL_1_MASK);
 
     clear_white();
-    fill_band(72, 78);                   /* center right -> bit 1 */
+    fill_band(64, 68);                   /* center right -> bit 1 */
     CHECK(sample_mask() == IR_CHANNEL_2_MASK);
 
     clear_white();
-    fill_band(42, 48);                   /* center left -> bit 2 */
+    fill_band(52, 56);                   /* center left -> bit 2 */
     CHECK(sample_mask() == IR_CHANNEL_3_MASK);
 
     clear_white();
-    fill_band(12, 18);                   /* car left -> bit 3 */
+    fill_band(22, 26);                   /* car left -> bit 3 */
     CHECK(sample_mask() == IR_CHANNEL_4_MASK);
 }
 
 static void test_line_on_boundary_lights_two_channels(void)
 {
-    /* A wide line straddling channels 2 and 3 lights both -> 0x06. */
+    /* A wide line straddling the two inner channels lights both -> 0x06.
+     * On the real 60 px wide image the inner blocks share the exact centre,
+     * so a dead-centre line reads 0x06 and mask_to_error returns 0. */
     clear_white();
-    fill_band(40, 80);
+    fill_band(50, 70);
     CHECK(sample_mask() == (IR_CHANNEL_2_MASK | IR_CHANNEL_3_MASK));
 }
 
@@ -95,7 +97,7 @@ static void test_all_white_is_no_line(void)
 
 static void test_finish_needs_confirm_then_all_black(void)
 {
-    /* Wide bar over channels 4..2 (0..90) leaves channel 1 (105) white, so the
+    /* Wide bar over channels 4..2 (0..90) leaves channel 1 (96) white, so the
      * raw mask is 0x0E. After PSEUDO_IR_FINISH_CONFIRM_FRAMES frames the
      * finish confirmation upgrades it to all-black 0x0F. */
     pseudo_infrared_reset();
@@ -115,7 +117,7 @@ static void test_finish_confirmation_resets(void)
     CHECK(sample_mask() == 0x0EU);   /* first candidate frame: not yet all black */
 
     clear_white();                   /* finish bar gone -> confirmation resets */
-    fill_band(72, 78);
+    fill_band(64, 68);
     CHECK(sample_mask() == IR_CHANNEL_2_MASK);
 }
 

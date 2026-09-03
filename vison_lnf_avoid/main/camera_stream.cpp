@@ -110,9 +110,10 @@ function drawOverlay(s){
   c.beginPath(); c.moveTo(0,y); c.lineTo(w,y); c.stroke();
   c.setLineDash([]);
   const bw = s.block*w/s.img_w, bh = s.block*h/s.img_h;
+  const cp = s.ch_pct || [80,55,45,20];
   for(let i=0;i<4;i++){
     const on = ((s.mask >>> i) & 1) !== 0;
-    const x = (7 - 2*i)/8*w;
+    const x = cp[i]/100*w;
     c.fillStyle = on ? 'rgba(49,233,129,.55)' : 'rgba(255,255,255,.05)';
     c.strokeStyle = on ? '#31e981' : 'rgba(255,255,255,.6)';
     c.lineWidth = 1.5;
@@ -173,11 +174,12 @@ static esp_err_t status_handler(httpd_req_t *req)
     const int64_t age_ms = camera.last_frame_us == 0 ? -1 :
         (esp_timer_get_time() - camera.last_frame_us) / 1000LL;
 
-    char json[320];
+    char json[384];
     const int len = snprintf(json, sizeof(json),
         "{\"started\":%d,\"connected\":%d,\"frames\":%u,\"drop\":%u,"
         "\"dec_fail\":%u,\"age_ms\":%lld,\"mask\":%u,"
-        "\"img_w\":%u,\"img_h\":%u,\"block\":%u,\"row_pct\":%u}",
+        "\"img_w\":%u,\"img_h\":%u,\"block\":%u,\"row_pct\":%u,"
+        "\"ch_pct\":[%u,%u,%u,%u]}",
         camera.started ? 1 : 0,
         camera.connected ? 1 : 0,
         (unsigned)camera.received_frames,
@@ -188,7 +190,11 @@ static esp_err_t status_handler(httpd_req_t *req)
         (unsigned)camera.image_width,
         (unsigned)camera.image_height,
         (unsigned)PSEUDO_IR_BLOCK_SIZE,
-        (unsigned)PSEUDO_IR_SAMPLE_ROW_PERCENT);
+        (unsigned)PSEUDO_IR_SAMPLE_ROW_PERCENT,
+        (unsigned)PSEUDO_IR_CH1_CENTER_PERCENT,
+        (unsigned)PSEUDO_IR_CH2_CENTER_PERCENT,
+        (unsigned)PSEUDO_IR_CH3_CENTER_PERCENT,
+        (unsigned)PSEUDO_IR_CH4_CENTER_PERCENT);
     if (len < 0 || (size_t)len >= sizeof(json)) {
         return ESP_ERR_NO_MEM;
     }

@@ -71,13 +71,18 @@ esp_err_t pseudo_infrared_sample_rgb888(const uint8_t *rgb,
     /*
      * Four fixed blocks, one per channel. bit 0 = channel 1 = car right
      * (largest logical x), bit 3 = channel 4 = car left. Channel centers are
-     * 7/8, 5/8, 3/8, 1/8 of the image width.
+     * configurable percents of the image width; the two inner channels straddle
+     * the exact centre so a dead-centre line lights both (error 0) instead of
+     * falling into a centre gap and reading all-white.
      */
-    static const unsigned center_numerators[4] = { 7U, 5U, 3U, 1U };
+    static const unsigned center_percent[4] = {
+        PSEUDO_IR_CH1_CENTER_PERCENT, PSEUDO_IR_CH2_CENTER_PERCENT,
+        PSEUDO_IR_CH3_CENTER_PERCENT, PSEUDO_IR_CH4_CENTER_PERCENT,
+    };
     const unsigned half = PSEUDO_IR_BLOCK_SIZE / 2U;
     uint8_t mask = 0U;
     for (unsigned i = 0U; i < 4U; ++i) {
-        const unsigned center_x = center_numerators[i] * width / 8U;
+        const unsigned center_x = width * center_percent[i] / 100U;
         const unsigned x0 = center_x > half ? center_x - half : 0U;
         const unsigned x1 = center_x + half < width ? center_x + half
                                                     : width - 1U;
