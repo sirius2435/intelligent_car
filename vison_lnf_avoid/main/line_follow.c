@@ -44,18 +44,33 @@ static bool mask_is_contiguous(uint8_t mask)
     return mask == 0U;
 }
 
+/* Tracking error uses ONLY the two inner channels (CH2 = +1 right of centre,
+ * CH3 = -1 left of centre); both lit = 0 (centred). The two outer channels are
+ * deliberately excluded so a wide line or gentle curve cannot yank the error to
+ * +/-3 and steer hard early. Outer channels are used solely to arm a corner in
+ * outer_direction() below. */
 static int mask_to_error(uint8_t mask)
 {
-    static const int weights[4] = {3, 1, -1, -3};
-    int sum = 0;
-    int count = 0;
-    for (unsigned bit = 0; bit < 4; ++bit) {
-        if ((mask & (1U << bit)) != 0U) {
-            sum += weights[bit];
-            ++count;
-        }
+    const bool right = (mask & IR_CHANNEL_2_MASK) != 0U;
+    const bool left = (mask & IR_CHANNEL_3_MASK) != 0U;
+    if (right == left) {
+        return 0;
     }
-    return count == 0 ? 0 : sum / count;
+    return right ? 1 : -1;
+}
+
+/* Which outer channel sees black: +1 = CH1 (car right), -1 = CH4 (car left),
+ * 0 = neither. For a contiguous, non-all-black mask at most one outer channel
+ * is lit, so the corner direction is unambiguous. */
+static int outer_direction(uint8_t mask)
+{
+    if ((mask & IR_CHANNEL_1_MASK) != 0U) {
+        return 1;
+    }
+    if ((mask & IR_CHANNEL_4_MASK) != 0U) {
+        return -1;
+    }
+    return 0;
 }
 
 static void reset_corner_detection(line_follow_controller_t *controller,
@@ -165,8 +180,9 @@ static line_follow_result_t search_result(line_follow_controller_t *controller,
         controller->search_phase == LINE_SEARCH_IDLE) {
         controller->search_phase = LINE_SEARCH_ROTATE;
         controller->search_leg = 0;
-        /* Lost-line scanning always checks the right side first, independent
-           of the last tracking error. Positive turn is a right turn. */
+        /* Lost-line scanning always checks the RIGHT side first, independent of
+           the last tracking error, then flips to the left for the second leg.
+           Positive turn is a right turn, so the first leg uses +1. */
         controller->search_direction = 1;
         controller->search_start_left_count = left_count;
         controller->search_start_right_count = right_count;
@@ -277,8 +293,13 @@ static line_follow_result_t update_corner_rotate(line_follow_controller_t *contr
     controller->last_cycle_tracking = false;
 
     if (black_mask != 0U && mask_is_contiguous(black_mask)) {
+        /* mask_to_error now ignores the outer channels, so require an inner
+           channel to actually see the line before counting it as centred;
+           otherwise an outer-only hit during the spin would read error 0 and
+           finish the corner prematurely. */
+        const uint8_t mid = black_mask & (IR_CHANNEL_2_MASK | IR_CHANNEL_3_MASK);
         const int error = mask_to_error(black_mask);
-        if (abs(error) <= 1) {
+        if (mid != 0U && abs(error) <= 1) {
             controller->corner_centered_ms =
                 add_saturated(controller->corner_centered_ms, elapsed_ms);
         } else {
@@ -404,23 +425,24 @@ line_follow_result_t line_follow_update(line_follow_controller_t *controller,
         };
     }
 
+    /* Error comes only from the two inner channels; the outer channels arm a
+       corner instead of steering. outer_dir: +1 CH1 (right), -1 CH4 (left). */
     const int error = mask_to_error(black_mask);
-    const int direction = error_direction(error);
+    const int outer_dir = outer_direction(black_mask);
 
     if (controller->state == LINE_FOLLOW_CORNER_CANDIDATE) {
-        if (abs(error) <= 1 || direction != controller->corner_direction) {
-            controller->state = LINE_FOLLOW_TRACKING;
-            reset_corner_detection(controller, true);
-        } else {
+        /* Still a corner only while the armed outer channel stays black and the
+           confirm window has not elapsed; otherwise it was a gentle curve. */
+        if (outer_dir == controller->corner_direction) {
             controller->corner_candidate_ms =
                 add_saturated(controller->corner_candidate_ms, elapsed_ms);
             if (controller->corner_candidate_ms <= LINE_CORNER_CONFIRM_WINDOW_MS) {
                 return controlled_result(controller, LINE_FOLLOW_CORNER_CANDIDATE,
                                          error, LINE_CORNER_APPROACH_FORWARD, old_state);
             }
-            controller->state = LINE_FOLLOW_TRACKING;
-            reset_corner_detection(controller, true);
         }
+        controller->state = LINE_FOLLOW_TRACKING;
+        reset_corner_detection(controller, true);
     }
 
     if (controller->state == LINE_FOLLOW_CORNER_EXIT) {
@@ -434,25 +456,16 @@ line_follow_result_t line_follow_update(line_follow_controller_t *controller,
                                  LINE_MIN_FORWARD, old_state);
     }
 
-    if (abs(error) <= 1) {
-        controller->corner_arm_ms = 0;
-        controller->corner_direction = 0;
-        if (!controller->corner_rearm_ready) {
-            controller->corner_centered_ms =
-                add_saturated(controller->corner_centered_ms, elapsed_ms);
-            if (controller->corner_centered_ms >= LINE_CORNER_CENTERED_MS) {
-                controller->corner_rearm_ready = true;
-                controller->corner_centered_ms = LINE_CORNER_CENTERED_MS;
-            }
-        }
-    } else {
+    if (outer_dir != 0) {
+        /* An outer channel sees black: arm a corner when we were recently
+           centred; otherwise ignore it and keep tracking on the inner two. */
         controller->corner_centered_ms = 0;
         if (controller->corner_rearm_ready) {
-            if (controller->corner_direction == direction) {
+            if (controller->corner_direction == outer_dir) {
                 controller->corner_arm_ms =
                     add_saturated(controller->corner_arm_ms, elapsed_ms);
             } else {
-                controller->corner_direction = direction;
+                controller->corner_direction = outer_dir;
                 controller->corner_arm_ms = elapsed_ms;
             }
             if (controller->corner_arm_ms >= LINE_CORNER_ARM_MS) {
@@ -463,6 +476,19 @@ line_follow_result_t line_follow_update(line_follow_controller_t *controller,
         } else {
             controller->corner_arm_ms = 0;
             controller->corner_direction = 0;
+        }
+    } else {
+        controller->corner_arm_ms = 0;
+        controller->corner_direction = 0;
+        if (error == 0 && !controller->corner_rearm_ready) {
+            controller->corner_centered_ms =
+                add_saturated(controller->corner_centered_ms, elapsed_ms);
+            if (controller->corner_centered_ms >= LINE_CORNER_CENTERED_MS) {
+                controller->corner_rearm_ready = true;
+                controller->corner_centered_ms = LINE_CORNER_CENTERED_MS;
+            }
+        } else if (error != 0) {
+            controller->corner_centered_ms = 0;
         }
     }
 

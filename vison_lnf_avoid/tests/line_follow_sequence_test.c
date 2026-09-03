@@ -95,7 +95,10 @@ static void test_candidate_timeout_requires_recenter(void)
     for (int i = 0; i < 3; ++i) {
         step(&controller, MASK_RIGHT);
     }
-    for (int i = 0; i < 12; ++i) {
+    /* Candidate holds while the armed outer channel stays black, until the
+       confirm window elapses (window / sample-period steps). */
+    const int hold = LINE_CORNER_CONFIRM_WINDOW_MS / IR_SAMPLE_PERIOD_MS;
+    for (int i = 0; i < hold; ++i) {
         CHECK(step(&controller, MASK_RIGHT).state == LINE_FOLLOW_CORNER_CANDIDATE);
     }
     CHECK(step(&controller, MASK_RIGHT).state == LINE_FOLLOW_TRACKING);
@@ -111,9 +114,13 @@ static void test_white_after_confirm_window_uses_normal_search(void)
     for (int i = 0; i < 3; ++i) {
         step(&controller, MASK_RIGHT);
     }
-    for (int i = 0; i < 12; ++i) {
-        CHECK(step(&controller, MASK_RIGHT).state == LINE_FOLLOW_CORNER_CANDIDATE);
+    /* Expire the candidate (window elapsed + 1 step drops back to TRACKING),
+       so a following all-white uses the normal lost search, not a corner. */
+    const int expire = LINE_CORNER_CONFIRM_WINDOW_MS / IR_SAMPLE_PERIOD_MS + 1;
+    for (int i = 0; i < expire; ++i) {
+        step(&controller, MASK_RIGHT);
     }
+    CHECK(controller.state == LINE_FOLLOW_TRACKING);
     CHECK(step(&controller, MASK_WHITE).state == LINE_FOLLOW_LOST_SEARCH);
 }
 
@@ -167,13 +174,14 @@ static void test_consecutive_opposite_corners(void)
     enter_rotate(&controller, -1);
 }
 
-static void enter_right_search(line_follow_controller_t *controller)
+static void enter_lost_search(line_follow_controller_t *controller)
 {
     warm_center(controller);
     CHECK(step(controller, MASK_RIGHT).state == LINE_FOLLOW_TRACKING);
     const line_follow_result_t result = step_at(controller, MASK_WHITE, 0, 0);
     CHECK(result.state == LINE_FOLLOW_LOST_SEARCH);
     CHECK(result.forward == 0);
+    /* Lost search sweeps RIGHT first (positive turn). */
     CHECK(result.turn == LINE_SEARCH_TURN);
     CHECK(controller->search_phase == LINE_SEARCH_ROTATE);
     CHECK(controller->search_leg == 0);
@@ -197,7 +205,7 @@ static void test_search_always_starts_right_after_left_error(void)
 static void test_search_first_leg_and_settle(void)
 {
     line_follow_controller_t controller;
-    enter_right_search(&controller);
+    enter_lost_search(&controller);
 
     const int first_half = LINE_SEARCH_FIRST_COUNTS / 2;
     line_follow_result_t result =
@@ -220,7 +228,7 @@ static void test_search_first_leg_and_settle(void)
 static void test_search_uses_fine_turn_near_target(void)
 {
     line_follow_controller_t controller;
-    enter_right_search(&controller);
+    enter_lost_search(&controller);
     const int progress = LINE_SEARCH_FIRST_COUNTS -
                          LINE_SEARCH_30_DEG_COUNTS / 4 + 1;
     const line_follow_result_t result =
@@ -232,11 +240,11 @@ static void test_search_uses_fine_turn_near_target(void)
 static void test_search_reacquires_while_rotating_and_settling(void)
 {
     line_follow_controller_t controller;
-    enter_right_search(&controller);
+    enter_lost_search(&controller);
     CHECK(step_at(&controller, MASK_CENTER, 20, -20).state == LINE_FOLLOW_TRACKING);
     CHECK(controller.search_phase == LINE_SEARCH_IDLE);
 
-    enter_right_search(&controller);
+    enter_lost_search(&controller);
     const int first_half = LINE_SEARCH_FIRST_COUNTS / 2;
     CHECK(step_at(&controller, MASK_WHITE, first_half, -first_half).turn == 0);
     CHECK(controller.search_phase == LINE_SEARCH_SETTLE);
@@ -248,7 +256,7 @@ static void test_search_reacquires_while_rotating_and_settling(void)
 static void test_search_accepts_negative_encoder_polarity(void)
 {
     line_follow_controller_t controller;
-    enter_right_search(&controller);
+    enter_lost_search(&controller);
     const int first_half = LINE_SEARCH_FIRST_COUNTS / 2;
     const line_follow_result_t result =
         step_at(&controller, MASK_WHITE, -first_half, first_half);
@@ -260,7 +268,7 @@ static void test_search_accepts_negative_encoder_polarity(void)
 static void test_search_exhausts_two_legs(void)
 {
     line_follow_controller_t controller;
-    enter_right_search(&controller);
+    enter_lost_search(&controller);
     int left_count = 0;
     int right_count = 0;
 
@@ -290,7 +298,7 @@ static void test_search_exhausts_two_legs(void)
 static void test_search_timeout_stops(void)
 {
     line_follow_controller_t controller;
-    enter_right_search(&controller);
+    enter_lost_search(&controller);
     const line_follow_result_t result =
         line_follow_update(&controller, MASK_WHITE, LINE_LOST_STOP_MS, 0, 0);
     CHECK(result.state == LINE_FOLLOW_STOPPED);
@@ -299,7 +307,7 @@ static void test_search_timeout_stops(void)
 static void test_search_stall_stops(void)
 {
     line_follow_controller_t controller;
-    enter_right_search(&controller);
+    enter_lost_search(&controller);
     line_follow_result_t result = {0};
     for (unsigned elapsed = 0; elapsed < LINE_SEARCH_STALL_MS;
          elapsed += IR_SAMPLE_PERIOD_MS) {
