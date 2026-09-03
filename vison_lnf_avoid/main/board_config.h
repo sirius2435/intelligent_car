@@ -160,7 +160,7 @@
  * on the bench and tune these three values to the real hard stops. */
 #define CAMERA_TILT_SERVO_MIN_DEG            30
 #define CAMERA_TILT_SERVO_MAX_DEG           150
-#define CAMERA_TILT_SERVO_CENTER_DEG         100
+#define CAMERA_TILT_SERVO_CENTER_DEG         110
 
 /* Pseudo-infrared: fixed pixel-block sampling of the decoded RGB image.
  *
@@ -181,7 +181,7 @@
  *   of the car where the physical infrared board sits. Raise it to sample a
  *   row closer to the car (wider in pixels).
  * - PSEUDO_IR_BLOCK_SIZE: sampled block side in pixels. On the 60 px wide
- *   decoded image at 6 the block spans ~7 px. Keep the block <= the spacing to
+ *   decoded image at 4 the block spans ~5 px. Keep the block <= the spacing to
  *   the neighbouring channel so channels stay separable; larger blocks make
  *   narrow lines easier to catch but blur channel separation and can make two
  *   adjacent channels light together. Verify on the floor at low speed:
@@ -195,18 +195,24 @@
  * - PSEUDO_IR_BLOCK_DARK_MIN: how many dark pixels a block needs to count as
  *   "on the line". Keep at 2 after shrinking the block; raise to 3 only if
  *   two adjacent blocks still light together. */
-#define PSEUDO_IR_BLOCK_SIZE                   6
+#define PSEUDO_IR_BLOCK_SIZE                   4
 /* Lateral block centres as a percent of the decoded image width. CH1 = car
- * right ... CH4 = car left. The inner pair (55/45) straddles the exact centre
- * (50) so a dead-centre line lights BOTH inner blocks -> mask_to_error gives
+ * right ... CH4 = car left. The two outer channels were pulled inward (80/20
+ * -> 74/27) so their blocks no longer sit at the extreme frame edges, where at
+ * start-up they picked up dark pixels OUTSIDE the lane (the adjacent loop
+ * straight / table background) and gave a false left/right reading. The block
+ * side was shrunk 6 -> 4 in proportion to the narrower channel pitch, so the
+ * block-to-gap ratio (~5 px block, ~7 px gap) stays about the same.
+ * The inner pair (54/47) still straddles the exact centre (50) so a
+ * dead-centre line lights BOTH inner blocks -> mask_to_error gives
  * (+1 + -1)/2 = 0 (perfectly centred) instead of dropping into a centre gap
  * and reading all-white / WAITING_LINE. On the 60 px wide image these map to
- * pixel centres 48, 33, 27, 12; keep CH2/CH3 symmetric about 50 and CH1/CH4
- * symmetric about them. */
-#define PSEUDO_IR_CH1_CENTER_PERCENT          80
-#define PSEUDO_IR_CH2_CENTER_PERCENT          55
-#define PSEUDO_IR_CH3_CENTER_PERCENT          45
-#define PSEUDO_IR_CH4_CENTER_PERCENT          20
+ * pixel centres 44, 32, 28, 16 (blocks 42-46, 30-34, 26-30, 14-18); keep
+ * CH2/CH3 symmetric about 50 and CH1/CH4 symmetric about them. */
+#define PSEUDO_IR_CH1_CENTER_PERCENT          74
+#define PSEUDO_IR_CH2_CENTER_PERCENT          54
+#define PSEUDO_IR_CH3_CENTER_PERCENT          47
+#define PSEUDO_IR_CH4_CENTER_PERCENT          27
 #define PSEUDO_IR_SAMPLE_ROW_PERCENT          70
 #define PSEUDO_IR_BLACK_MARGIN                40
 #define PSEUDO_IR_BLOCK_DARK_MIN               2

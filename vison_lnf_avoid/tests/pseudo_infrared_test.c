@@ -61,21 +61,21 @@ static uint8_t sample_mask(void)
 
 static void test_four_fixed_channels(void)
 {
-    /* Channel centers: 80%, 55%, 45%, 20% of width 120 = 96, 66, 54, 24. */
+    /* Channel centers: 74%, 54%, 47%, 27% of width 120 = 88, 64, 56, 32. */
     clear_white();
-    fill_band(94, 98);                   /* car right -> bit 0 */
+    fill_band(87, 89);                   /* car right -> bit 0 */
     CHECK(sample_mask() == IR_CHANNEL_1_MASK);
 
     clear_white();
-    fill_band(64, 68);                   /* center right -> bit 1 */
+    fill_band(63, 65);                   /* center right -> bit 1 */
     CHECK(sample_mask() == IR_CHANNEL_2_MASK);
 
     clear_white();
-    fill_band(52, 56);                   /* center left -> bit 2 */
+    fill_band(55, 57);                   /* center left -> bit 2 */
     CHECK(sample_mask() == IR_CHANNEL_3_MASK);
 
     clear_white();
-    fill_band(22, 26);                   /* car left -> bit 3 */
+    fill_band(31, 33);                   /* car left -> bit 3 */
     CHECK(sample_mask() == IR_CHANNEL_4_MASK);
 }
 
@@ -85,7 +85,7 @@ static void test_line_on_boundary_lights_two_channels(void)
      * On the real 60 px wide image the inner blocks share the exact centre,
      * so a dead-centre line reads 0x06 and mask_to_error returns 0. */
     clear_white();
-    fill_band(50, 70);
+    fill_band(52, 68);
     CHECK(sample_mask() == (IR_CHANNEL_2_MASK | IR_CHANNEL_3_MASK));
 }
 
@@ -97,12 +97,13 @@ static void test_all_white_is_no_line(void)
 
 static void test_finish_needs_confirm_then_all_black(void)
 {
-    /* Wide bar over channels 4..2 (0..90) leaves channel 1 (96) white, so the
-     * raw mask is 0x0E. After PSEUDO_IR_FINISH_CONFIRM_FRAMES frames the
-     * finish confirmation upgrades it to all-black 0x0F. */
+    /* Wide bar over channels 4..2 (0..84) leaves channel 1 (88) white, so the
+     * raw mask is 0x0E. The 85 px run is 70% of the 120 px width, so after
+     * PSEUDO_IR_FINISH_CONFIRM_FRAMES frames the finish confirmation upgrades
+     * it to all-black 0x0F. */
     pseudo_infrared_reset();
     clear_white();
-    fill_band(0, 90);
+    fill_band(0, 84);
 
     CHECK(sample_mask() == 0x0EU);
     CHECK(sample_mask() == 0x0EU);
@@ -113,11 +114,11 @@ static void test_finish_confirmation_resets(void)
 {
     pseudo_infrared_reset();
     clear_white();
-    fill_band(0, 90);
+    fill_band(0, 84);
     CHECK(sample_mask() == 0x0EU);   /* first candidate frame: not yet all black */
 
     clear_white();                   /* finish bar gone -> confirmation resets */
-    fill_band(64, 68);
+    fill_band(63, 65);
     CHECK(sample_mask() == IR_CHANNEL_2_MASK);
 }
 
