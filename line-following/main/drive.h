@@ -13,7 +13,15 @@ typedef struct {
 } drive_wheel_command_t;
 
 esp_err_t drive_init(void);
-esp_err_t drive_set_motion(int forward, int turn, drive_wheel_command_t *applied);
+
+/*
+ * Drive the three omni wheels from a 3-DOF body command.
+ *   forward > 0 : car moves forward.
+ *   strafe > 0  : car moves left (bench-verified), negative moves right.
+ *   turn > 0    : car turns right (matches the existing convention).
+ */
+esp_err_t drive_set_motion(int forward, int strafe, int turn,
+                           drive_wheel_command_t *applied);
 esp_err_t drive_stop(void);
 
 #ifdef __cplusplus

@@ -51,7 +51,7 @@
 
 /* Change a value to 1 if that individual motor runs in the wrong direction. */
 #define MOTOR_LEFT_REVERSED         0
-#define MOTOR_RIGHT_REVERSED        0
+#define MOTOR_RIGHT_REVERSED        1
 #define MOTOR_REAR_REVERSED         0
 
 /* Open-loop line-following parameters; all motor commands use -1000..1000. */
@@ -69,3 +69,17 @@
 #define LINE_INVALID_GRACE_MS      100
 #define LINE_START_DELAY_MS       3000
 #define LINE_LOG_PERIOD_MS         100
+
+/*
+ * Optional left-strafe demo. When STRAFE_DEMO_ENABLED is 1, app_main runs a
+ * single strafe maneuver instead of the line-following loop: wait
+ * STRAFE_DEMO_START_MS, strafe at STRAFE_DEMO_SPEED for STRAFE_DEMO_RUN_MS,
+ * then stop and lock. Set back to 0 to restore normal line following.
+ *
+ * STRAFE_DEMO_SPEED is signed: positive moves the car left (bench-verified),
+ * negative moves right. Do not change motor wiring while powered.
+ */
+#define STRAFE_DEMO_ENABLED        1
+#define STRAFE_DEMO_SPEED          200
+#define STRAFE_DEMO_RUN_MS         2000
+#define STRAFE_DEMO_START_MS       3000

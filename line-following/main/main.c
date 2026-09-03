@@ -23,6 +23,30 @@ static void stop_after_runtime_error(const char *operation, esp_err_t result)
     }
 }
 
+#if STRAFE_DEMO_ENABLED
+static void run_strafe_demo(void)
+{
+    ESP_LOGW(TAG, "Strafe demo: left translation at %d/1000 for %d ms",
+             STRAFE_DEMO_SPEED, STRAFE_DEMO_RUN_MS);
+    vTaskDelay(pdMS_TO_TICKS(STRAFE_DEMO_START_MS));
+
+    drive_wheel_command_t wheels = {0};
+    esp_err_t result = drive_set_motion(0, STRAFE_DEMO_SPEED, 0, &wheels);
+    if (result != ESP_OK) {
+        stop_after_runtime_error("drive_set_motion", result);
+    }
+    ESP_LOGI(TAG, "Strafe wheels=[%d,%d,%d]", wheels.left, wheels.right, wheels.rear);
+
+    vTaskDelay(pdMS_TO_TICKS(STRAFE_DEMO_RUN_MS));
+
+    result = drive_stop();
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Strafe stop failed: %s", esp_err_to_name(result));
+    }
+    ESP_LOGI(TAG, "Strafe demo complete; motors stopped");
+}
+#endif
+
 void app_main(void)
 {
     esp_err_t result = drive_init();
@@ -46,6 +70,11 @@ void app_main(void)
         return;
     }
 
+#if STRAFE_DEMO_ENABLED
+    run_strafe_demo();
+    return;
+#endif
+
     ESP_LOGW(TAG, "Line following starts in %d ms; keep the car safely positioned",
              LINE_START_DELAY_MS);
     vTaskDelay(pdMS_TO_TICKS(LINE_START_DELAY_MS));
@@ -68,7 +97,7 @@ void app_main(void)
         const line_follow_result_t control =
             line_follow_update(&controller, sensor.black_mask, IR_SAMPLE_PERIOD_MS);
         drive_wheel_command_t wheels = {0};
-        result = drive_set_motion(control.forward, control.turn, &wheels);
+        result = drive_set_motion(control.forward, 0, control.turn, &wheels);
         if (result != ESP_OK) {
             stop_after_runtime_error("drive_set_motion", result);
         }
