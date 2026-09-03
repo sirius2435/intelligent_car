@@ -75,15 +75,10 @@ h3{margin:4px 0 8px}
 <h3>摄像头画面 <small style="color:#8aa" id="host"></small></h3>
 <div class="camera"><img id="cam" alt="等待画面（需要摄像头出帧）…"><canvas id="overlay"></canvas></div>
 <div class="badges" id="badges"></div>
-<div class="kv"><span>横向误差 lateral_error（正=线在车右侧）</span><span id="lerr">-</span></div>
-<div class="bar"><i id="lmark" style="left:50%"></i></div>
-<div class="kv"><span>航向误差 heading_error</span><span id="herr">-</span></div>
-<div class="kv"><span>置信度 confidence</span><span id="conf">-</span></div>
-<div class="kv"><span>有效扫描行 valid_rows</span><span id="rows">-</span></div>
-<div class="kv"><span>线宽 px</span><span id="wpx">-</span></div>
+<div class="kv"><span>伪红外通道（左→右）</span><span id="mask">-</span></div>
 <div class="kv"><span>帧序号 / 累计丢帧 / 解码失败</span><span id="seq">-</span></div>
 <div class="kv"><span>画面年龄</span><span id="age">-</span></div>
-<p class="tip">黄/红线是算法的6条实际扫描行；绿点是该行最终选中的黑线中心，红线表示该行没有合格黑线。青色虚线是图像几何中心。端口81的裸 MJPEG 保持相机原始方向。</p>
+<p class="tip">绿色方块是4个固定采样块，亮起表示该通道压到黑线（左→右：通道4→通道1）；全黑=终点标记。端口81的裸 MJPEG 保持相机原始方向。</p>
 </div>
 <script>
 document.getElementById('host').textContent = location.hostname;
@@ -109,41 +104,38 @@ function drawOverlay(s){
   c.setLineDash([6,5]);
   c.beginPath(); c.moveTo(w/2,0); c.lineTo(w/2,h); c.stroke();
   c.restore();
-  const ys = s.scan_y || [], xs = s.scan_x || [];
-  for(let i=0;i<ys.length;i++){
-    const valid = ((s.scan_mask >>> i) & 1) !== 0;
-    const y = (ys[i]+0.5)*h/s.img_h;
-    c.strokeStyle = valid ? 'rgba(255,205,40,.82)' : 'rgba(255,65,65,.9)';
+  const y = (s.row_pct/100)*h;
+  c.strokeStyle = 'rgba(255,205,40,.5)';
+  c.setLineDash([3,4]);
+  c.beginPath(); c.moveTo(0,y); c.lineTo(w,y); c.stroke();
+  c.setLineDash([]);
+  const bw = s.block*w/s.img_w, bh = s.block*h/s.img_h;
+  for(let i=0;i<4;i++){
+    const on = ((s.mask >>> i) & 1) !== 0;
+    const x = (7 - 2*i)/8*w;
+    c.fillStyle = on ? 'rgba(49,233,129,.55)' : 'rgba(255,255,255,.05)';
+    c.strokeStyle = on ? '#31e981' : 'rgba(255,255,255,.6)';
     c.lineWidth = 1.5;
-    c.beginPath(); c.moveTo(0,y); c.lineTo(w,y); c.stroke();
-    c.fillStyle = valid ? '#ffe066' : '#ff5555';
-    c.font = 'bold 12px system-ui,sans-serif';
-    c.fillText('R'+i+(valid?'':' ×'),5,Math.max(12,y-3));
-    if(valid){
-      const x = (xs[i]+0.5)*w/s.img_w;
-      c.fillStyle = '#31e981';
-      c.beginPath(); c.arc(x,y,5,0,Math.PI*2); c.fill();
-      c.strokeStyle = '#062b17'; c.lineWidth = 2; c.stroke();
-    }
+    c.fillRect(x-bw/2, y-bh/2, bw, bh);
+    c.strokeRect(x-bw/2, y-bh/2, bw, bh);
+    c.fillStyle = on ? '#062b17' : '#8aa';
+    c.font = 'bold 11px system-ui,sans-serif';
+    c.fillText('CH'+(i+1), x-bw/2+2, y-bh/2+12);
   }
 }
 async function poll(){
   try{
     const r = await fetch('/status', {cache:'no-store'});
     const s = await r.json();
+    const finish = (s.mask & 0x0F) === 0x0F;
     document.getElementById('badges').innerHTML =
       B('USB ' + (s.connected ? '已连接' : '未连接'), s.connected ? 'ok' : 'bad') +
-      B('引导线 ' + (s.line ? '找到' : '丢失'), s.line ? 'ok' : 'bad') +
-      (s.finish ? B('终点标记','ok') : '') +
-      (s.corner ? B('拐角','ok') : '') +
+      (finish ? B('终点标记','ok') : '') +
       B('解码失败 ' + s.dec_fail, s.dec_fail ? 'bad' : '');
-    document.getElementById('lerr').textContent = s.lerr;
-    document.getElementById('lmark').style.left = ((s.lerr + 1000) / 20) + '%';
-    document.getElementById('herr').textContent = s.herr;
-    document.getElementById('conf').textContent = s.conf;
-    document.getElementById('rows').textContent = s.rows + '/6，ROI ' + s.roi_top + '–' + s.roi_bottom + '%';
-    document.getElementById('wpx').textContent = s.width_px;
-    document.getElementById('seq').textContent = s.seq + ' / ' + s.drop + ' / ' + s.dec_fail;
+    let m = '';
+    for(let i=3;i>=0;i--){ m += ((s.mask >>> i) & 1) ? 'B' : 'W'; }
+    document.getElementById('mask').textContent = m + ' (0x' + s.mask.toString(16).toUpperCase() + ')';
+    document.getElementById('seq').textContent = s.frames + ' / ' + s.drop + ' / ' + s.dec_fail;
     document.getElementById('age').textContent = s.age_ms < 0 ? '从未' : (s.age_ms + ' ms 前');
     latestStatus = s;
     requestAnimationFrame(() => drawOverlay(s));
@@ -181,47 +173,22 @@ static esp_err_t status_handler(httpd_req_t *req)
     const int64_t age_ms = camera.last_frame_us == 0 ? -1 :
         (esp_timer_get_time() - camera.last_frame_us) / 1000LL;
 
-    char json[640];
+    char json[320];
     const int len = snprintf(json, sizeof(json),
         "{\"started\":%d,\"connected\":%d,\"frames\":%u,\"drop\":%u,"
-        "\"dec_fail\":%u,\"seq\":%u,\"age_ms\":%lld,\"line\":%d,"
-        "\"finish\":%d,\"corner\":%d,\"conf\":%u,\"lerr\":%d,\"herr\":%d,"
-        "\"rows\":%u,\"width_px\":%u,\"img_w\":%u,\"img_h\":%u,"
-        "\"roi_top\":%u,\"roi_bottom\":%u,\"scan_mask\":%u,"
-        "\"scan_y\":[%u,%u,%u,%u,%u,%u],"
-        "\"scan_x\":[%u,%u,%u,%u,%u,%u]}",
+        "\"dec_fail\":%u,\"age_ms\":%lld,\"mask\":%u,"
+        "\"img_w\":%u,\"img_h\":%u,\"block\":%u,\"row_pct\":%u}",
         camera.started ? 1 : 0,
         camera.connected ? 1 : 0,
         (unsigned)camera.received_frames,
         (unsigned)camera.dropped_frames,
         (unsigned)camera.decode_failures,
-        (unsigned)camera.vision.sequence,
         (long long)age_ms,
-        camera.vision.line_found ? 1 : 0,
-        camera.vision.finish_marker ? 1 : 0,
-        camera.vision.corner_detected ? 1 : 0,
-        (unsigned)camera.vision.confidence,
-        camera.vision.lateral_error,
-        camera.vision.heading_error,
-        (unsigned)camera.vision.valid_rows,
-        (unsigned)camera.vision.line_width_pixels,
-        (unsigned)camera.vision.image_width,
-        (unsigned)camera.vision.image_height,
-        (unsigned)VISION_ROI_TOP_PERCENT,
-        (unsigned)VISION_ROI_BOTTOM_PERCENT,
-        (unsigned)camera.vision.scan_valid_mask,
-        (unsigned)camera.vision.scan_y[0],
-        (unsigned)camera.vision.scan_y[1],
-        (unsigned)camera.vision.scan_y[2],
-        (unsigned)camera.vision.scan_y[3],
-        (unsigned)camera.vision.scan_y[4],
-        (unsigned)camera.vision.scan_y[5],
-        (unsigned)camera.vision.scan_center_x[0],
-        (unsigned)camera.vision.scan_center_x[1],
-        (unsigned)camera.vision.scan_center_x[2],
-        (unsigned)camera.vision.scan_center_x[3],
-        (unsigned)camera.vision.scan_center_x[4],
-        (unsigned)camera.vision.scan_center_x[5]);
+        (unsigned)camera.infrared.black_mask,
+        (unsigned)camera.image_width,
+        (unsigned)camera.image_height,
+        (unsigned)PSEUDO_IR_BLOCK_SIZE,
+        (unsigned)PSEUDO_IR_SAMPLE_ROW_PERCENT);
     if (len < 0 || (size_t)len >= sizeof(json)) {
         return ESP_ERR_NO_MEM;
     }

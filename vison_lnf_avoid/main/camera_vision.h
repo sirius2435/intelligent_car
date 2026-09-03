@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
-#include "vision_line.h"
+#include "infrared_sensor.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,7 +17,9 @@ typedef struct {
     uint32_t decode_failures;
     uint32_t dropped_frames;
     int64_t last_frame_us;
-    vision_result_t vision;
+    uint16_t image_width;
+    uint16_t image_height;
+    infrared_sensor_state_t infrared;
 } camera_vision_status_t;
 
 esp_err_t camera_vision_start(void);

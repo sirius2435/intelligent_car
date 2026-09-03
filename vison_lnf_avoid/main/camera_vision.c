@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "board_config.h"
+#include "pseudo_infrared.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_psram.h"
@@ -46,7 +47,9 @@ static uint32_t s_received_frames;
 static uint32_t s_decode_failures;
 static uint32_t s_dropped_frames;
 static int64_t s_last_frame_us;
-static vision_result_t s_latest;
+static uint16_t s_image_width;
+static uint16_t s_image_height;
+static infrared_sensor_state_t s_sensor;
 static portMUX_TYPE s_status_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static volatile bool s_frame_pending;
@@ -69,8 +72,11 @@ static void publish_connection(bool connected)
     taskENTER_CRITICAL(&s_status_lock);
     s_connected = connected;
     if (!connected) {
-        s_latest.frame_valid = false;
-        s_latest.line_found = false;
+        s_sensor.black_mask = 0U;
+        s_sensor.changed = true;
+        s_image_width = 0U;
+        s_image_height = 0U;
+        pseudo_infrared_reset();
     }
     taskEXIT_CRITICAL(&s_status_lock);
 }
@@ -140,12 +146,13 @@ static void vision_task(void *arg)
             .out_scale = CAMERA_JPEG_SCALE,
         };
         esp_jpeg_image_output_t output = {0};
-        vision_result_t result = {0};
+        infrared_sensor_state_t sensor = {0};
         const esp_err_t decoded = esp_jpeg_decode(&decode, &output);
         const int64_t now_us = esp_timer_get_time();
         if (decoded == ESP_OK && output.width > 0U && output.height > 0U) {
-            vision_line_analyze_rgb888(s_rgb_buffer, output.width, output.height,
-                                       (size_t)output.width * 3U, &result);
+            pseudo_infrared_sample_rgb888(s_rgb_buffer, output.width,
+                                          output.height,
+                                          (size_t)output.width * 3U, &sensor);
         }
 
         /* Publish only after analyzing this JPEG so the browser image and
@@ -162,17 +169,15 @@ static void vision_task(void *arg)
         taskENTER_CRITICAL(&s_status_lock);
         s_frame_pending = false;
         s_last_frame_us = now_us;
-        if (decoded != ESP_OK || !result.frame_valid) {
+        if (decoded != ESP_OK || output.width == 0U || output.height == 0U) {
             ++s_decode_failures;
-            result = (vision_result_t) {
-                .sequence = seq,
-                .timestamp_us = now_us,
-            };
+            s_sensor.black_mask = 0U;   /* no usable frame -> all white */
+            s_sensor.changed = true;
         } else {
-            result.sequence = seq;
-            result.timestamp_us = now_us;
+            s_image_width = (uint16_t)output.width;
+            s_image_height = (uint16_t)output.height;
+            s_sensor = sensor;
         }
-        s_latest = result;
         taskEXIT_CRITICAL(&s_status_lock);
     }
 }
@@ -289,7 +294,9 @@ esp_err_t camera_vision_get_status(camera_vision_status_t *status)
         .decode_failures = s_decode_failures,
         .dropped_frames = s_dropped_frames,
         .last_frame_us = s_last_frame_us,
-        .vision = s_latest,
+        .image_width = s_image_width,
+        .image_height = s_image_height,
+        .infrared = s_sensor,
     };
     taskEXIT_CRITICAL(&s_status_lock);
     return s_started ? ESP_OK : ESP_ERR_INVALID_STATE;

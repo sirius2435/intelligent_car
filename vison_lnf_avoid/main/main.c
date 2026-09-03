@@ -44,7 +44,7 @@ static void wait_for_first_camera_frame(void)
     while (esp_timer_get_time() < deadline) {
         camera_vision_status_t camera = {0};
         if (camera_vision_get_status(&camera) == ESP_OK &&
-            camera.connected && camera.vision.frame_valid) {
+            camera.connected && camera.image_width > 0U) {
             ESP_LOGI(TAG, "camera ready after %u frames",
                      (unsigned)camera.received_frames);
             return;
@@ -123,9 +123,7 @@ void app_main(void)
             locked = true;
         }
 
-        infrared_sensor_state_t sensor = {0};
-        require_ok("pseudo_infrared_sample",
-                   pseudo_infrared_sample(&camera.vision, &sensor));
+        infrared_sensor_state_t sensor = camera.infrared;
 
         obstacle_avoidance_result_t avoid = obstacle_avoidance_update(
             &avoidance, &ultrasonic, sensor.black_mask, elapsed_ms,
@@ -191,15 +189,17 @@ void app_main(void)
             pseudo_infrared_format(sensor.black_mask, display);
             ESP_LOGI(TAG,
                      "follow=%s avoid=%s lock=%d sensor=%s motion=[%d,%d,%d] "
-                     "vision=[line=%d finish=%d conf=%u err=%d head=%d rows=%u "
-                     "seq=%u age=%lldms] range=[%s,%umm] enc=[%d,%d,%d]",
+                     "cam=[%ux%u age=%lldms frames=%u drop=%u dec=%u] "
+                     "range=[%s,%umm] enc=[%d,%d,%d]",
                      line_follow_state_name(control.state),
                      obstacle_avoidance_state_name(avoid.state), locked,
                      display, forward, lateral, turn,
-                     camera.vision.line_found, camera.vision.finish_marker,
-                     camera.vision.confidence, camera.vision.lateral_error,
-                     camera.vision.heading_error, camera.vision.valid_rows,
-                     (unsigned)camera.vision.sequence, (long long)frame_age_ms,
+                     (unsigned)camera.image_width,
+                     (unsigned)camera.image_height,
+                     (long long)frame_age_ms,
+                     (unsigned)camera.received_frames,
+                     (unsigned)camera.dropped_frames,
+                     (unsigned)camera.decode_failures,
                      ultrasonic_status_name(ultrasonic.status),
                      (unsigned)ultrasonic.distance_mm,
                      left_count, right_count, rear_count);

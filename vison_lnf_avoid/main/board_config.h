@@ -134,36 +134,39 @@
  * centering is added later; -1 means the servo is not driven by firmware. */
 #define CAMERA_PAN_SERVO_GPIO               (-1)
 
-/* Vision segmentation and line geometry (processed image is 120x213). */
-#define VISION_SCAN_ROW_COUNT                  6
-#define VISION_ROI_TOP_PERCENT                40
-#define VISION_ROI_BOTTOM_PERCENT             70
-#define VISION_BLACK_MARGIN                   24
-#define VISION_MIN_LINE_WIDTH_PERCENT          1
-#define VISION_MAX_LINE_WIDTH_PERCENT         38
-#define VISION_FINISH_WIDTH_PERCENT           70
-#define VISION_LINE_CONFIDENCE_MIN            450
-#define VISION_REACQUIRE_CONFIDENCE_MIN       600
-#define VISION_REACQUIRE_ERROR_MAX            100
-#define VISION_REACQUIRE_FRAMES                 3
-#define VISION_CENTERED_FRAMES                  5
-
-/* Camera line-following output; commands remain in -1000..1000. */
-#define VISION_BASE_FORWARD                  160
-#define VISION_MIN_FORWARD                   100
-#define VISION_ERROR_SLOWDOWN                 20
-#define VISION_KP_NUM                        340
-#define VISION_KP_DEN                       1000
-#define VISION_KD_NUM                         55
-#define VISION_KD_DEN                       1000
-#define VISION_HEADING_GAIN                  120
-#define VISION_TURN_LIMIT                    250
-#define VISION_CORNER_HEADING_THRESHOLD      420
-#define VISION_CORNER_FORWARD                 65
-#define VISION_LOST_GRACE_MS                 450
-#define VISION_LOST_SEARCH_MS               1200
-#define VISION_LOST_TURN                     120
-#define VISION_FINISH_CONFIRM_FRAMES           3
+/* Pseudo-infrared: fixed pixel-block sampling of the decoded RGB image.
+ *
+ * Four blocks stand in for the four channels of the LQ_R4CHVB infrared board.
+ * They are sampled on a single row nearest the car (PSEUDO_IR_SAMPLE_ROW_PERCENT
+ * of the frame height) at the four channel centers W/8, 3W/8, 5W/8, 7W/8.
+ * Bit 0 = channel 1 = car right, bit 3 = channel 4 = car left (authoritative
+ * from the reference project lnf_avoid). A block counts as "black" when at
+ * least PSEUDO_IR_BLOCK_DARK_MIN pixels fall below the row's adaptive
+ * threshold; a confirmed wide dark run across the sample row (finish bar) is
+ * reported as all-black so the infrared state machine stops on it.
+ *
+ * Calibration knobs (verify on the actual floor at low speed):
+ * - PSEUDO_IR_SAMPLE_ROW_PERCENT: which image row maps to the distance ahead
+ *   of the car where the physical infrared board sits. Raise it to sample a
+ *   row closer to the car (wider in pixels).
+ * - PSEUDO_IR_BLOCK_SIZE: sampled block side in pixels. On the 60 px wide
+ *   decoded image the channel pitch is 15 px, so keep the block well under
+ *   that: at 6 the block spans ~7 px and the gap to the next block is ~8 px,
+ *   so a line centred between two channels reads all-white (lost) and only
+ *   one channel lights when the line sits on it. Larger blocks make narrow
+ *   lines easier to catch but blur channel separation. Verify on the floor at
+ *   low speed: (1) line on a channel lights exactly one block, (2) line
+ *   between channels reads all-white, (3) the finish bar still confirms as
+ *   all-black 0x0F.
+ * - PSEUDO_IR_BLOCK_DARK_MIN: how many dark pixels a block needs to count as
+ *   "on the line". Keep at 2 after shrinking the block; raise to 3 only if
+ *   two adjacent blocks still light together. */
+#define PSEUDO_IR_BLOCK_SIZE                   6
+#define PSEUDO_IR_SAMPLE_ROW_PERCENT          70
+#define PSEUDO_IR_BLACK_MARGIN                24
+#define PSEUDO_IR_BLOCK_DARK_MIN               2
+#define PSEUDO_IR_FINISH_WIDTH_PERCENT        70
+#define PSEUDO_IR_FINISH_CONFIRM_FRAMES        3
 
 /* HC-SR04 ultrasonic ranger. ECHO is a 5 V signal: use a divider/level shifter. */
 #define ULTRASONIC_TRIG_GPIO         14
