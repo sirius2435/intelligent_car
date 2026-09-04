@@ -65,8 +65,8 @@
  */
 
 /* Open-loop line-following parameters; all motor commands use -1000..1000. */
-#define LINE_BASE_FORWARD          160
-#define LINE_MIN_FORWARD           100
+#define LINE_BASE_FORWARD          170
+#define LINE_MIN_FORWARD           120
 #define LINE_ERROR_SLOWDOWN         20
 #define LINE_KP                     70
 #define LINE_KD                     15                                          
