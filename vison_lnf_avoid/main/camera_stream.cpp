@@ -110,7 +110,7 @@ function drawOverlay(s){
   c.beginPath(); c.moveTo(0,y); c.lineTo(w,y); c.stroke();
   c.setLineDash([]);
   const bw = s.block*w/s.img_w, bh = s.block*h/s.img_h;
-  const cp = s.ch_pct || [74,54,47,27];
+  const cp = s.ch_pct || [65,54,47,35];
   for(let i=0;i<4;i++){
     const on = ((s.mask >>> i) & 1) !== 0;
     const x = cp[i]/100*w;

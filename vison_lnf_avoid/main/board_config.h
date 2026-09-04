@@ -197,22 +197,30 @@
  *   two adjacent blocks still light together. */
 #define PSEUDO_IR_BLOCK_SIZE                   4
 /* Lateral block centres as a percent of the decoded image width. CH1 = car
- * right ... CH4 = car left. The two outer channels were pulled inward (80/20
- * -> 74/27) so their blocks no longer sit at the extreme frame edges, where at
- * start-up they picked up dark pixels OUTSIDE the lane (the adjacent loop
- * straight / table background) and gave a false left/right reading. The block
- * side was shrunk 6 -> 4 in proportion to the narrower channel pitch, so the
- * block-to-gap ratio (~5 px block, ~7 px gap) stays about the same.
+ * right ... CH4 = car left. The two outer channels have been pulled inward in
+ * two steps: 80/20 -> 74/27 kept the blocks off the extreme frame edges,
+ * where at start-up they picked up dark pixels OUTSIDE the lane (the adjacent
+ * loop straight / table background) and gave a false left/right reading; the
+ * second step 74/27 -> 65/35 shifts each outer block toward the centre by
+ * exactly one block length (5 px on the 60 px wide image), tightening the
+ * whole aperture around the lane. The block side was shrunk 6 -> 4 with the
+ * first step, in proportion to the narrower channel pitch.
  * The inner pair (54/47) still straddles the exact centre (50) so a
  * dead-centre line lights BOTH inner blocks -> mask_to_error gives
  * (+1 + -1)/2 = 0 (perfectly centred) instead of dropping into a centre gap
  * and reading all-white / WAITING_LINE. On the 60 px wide image these map to
- * pixel centres 44, 32, 28, 16 (blocks 42-46, 30-34, 26-30, 14-18); keep
- * CH2/CH3 symmetric about 50 and CH1/CH4 symmetric about them. */
-#define PSEUDO_IR_CH1_CENTER_PERCENT          74
+ * pixel centres 39, 32, 28, 21 (blocks 37-41, 30-34, 26-30, 19-23); keep
+ * CH2/CH3 symmetric about 50 and CH1/CH4 symmetric about them.
+ * Side effect of the second step: the outer-to-inner pitch is now 7 px, so
+ * only ~2 px of white separates CH1/CH2 and CH3/CH4 (block 5 px > gap 2 px).
+ * A moderately wide line can therefore light an outer block together with its
+ * inner neighbour, which arms a corner (see outer_direction() in line_follow.c)
+ * at a smaller lateral offset than before. If gentle curves start arming
+ * corners, raise PSEUDO_IR_BLOCK_DARK_MIN to 3 or move CH1/CH4 back out. */
+#define PSEUDO_IR_CH1_CENTER_PERCENT          65
 #define PSEUDO_IR_CH2_CENTER_PERCENT          54
 #define PSEUDO_IR_CH3_CENTER_PERCENT          47
-#define PSEUDO_IR_CH4_CENTER_PERCENT          27
+#define PSEUDO_IR_CH4_CENTER_PERCENT          35
 #define PSEUDO_IR_SAMPLE_ROW_PERCENT          70
 #define PSEUDO_IR_BLACK_MARGIN                40
 #define PSEUDO_IR_BLOCK_DARK_MIN               2
@@ -233,7 +241,7 @@
  */
 #define AVOID_TRIGGER_DISTANCE_MM      50
 #define AVOID_TRIGGER_CONFIRM_SAMPLES   2
-#define AVOID_SLOW_DISTANCE_MM         100
+#define AVOID_SLOW_DISTANCE_MM         150
 #define AVOID_SLOW_FORWARD              90
 #define AVOID_CLEAR_DISTANCE_MM        120
 #define AVOID_CLEAR_CONFIRM_SAMPLES      3
