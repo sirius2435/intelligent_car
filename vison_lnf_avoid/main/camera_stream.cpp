@@ -104,6 +104,21 @@ function drawOverlay(s){
   c.setLineDash([6,5]);
   c.beginPath(); c.moveTo(w/2,0); c.lineTo(w/2,h); c.stroke();
   c.restore();
+  if(s.mode === 1){
+    const objects = [
+      [s.red,'#ff4040','RED'], [s.white,'#ffffff','WHITE'],
+      [s.hole_l,'#40d0ff','HOLE-L'], [s.hole_r,'#ffcc40','HOLE-R']
+    ];
+    for(const [o,color,label] of objects){
+      if(!o || !o[0]) continue;
+      const x=(o[1]-o[3]/2)*w/s.img_w, y=(o[2]-o[4]/2)*h/s.img_h;
+      const ow=o[3]*w/s.img_w, oh=o[4]*h/s.img_h;
+      c.strokeStyle=color; c.lineWidth=2; c.strokeRect(x,y,ow,oh);
+      c.fillStyle=color; c.font='bold 11px system-ui,sans-serif';
+      c.fillText(label,x,Math.max(11,y-2));
+    }
+    return;
+  }
   const y = (s.row_pct/100)*h;
   c.strokeStyle = 'rgba(255,205,40,.5)';
   c.setLineDash([3,4]);
@@ -128,9 +143,10 @@ async function poll(){
   try{
     const r = await fetch('/status', {cache:'no-store'});
     const s = await r.json();
-    const finish = (s.mask & 0x0F) === 0x0F;
+    const finish = s.finish;
     document.getElementById('badges').innerHTML =
       B('USB ' + (s.connected ? '已连接' : '未连接'), s.connected ? 'ok' : 'bad') +
+      B(s.mode ? '推球视觉' : '巡线视觉','ok') +
       (finish ? B('终点标记','ok') : '') +
       B('解码失败 ' + s.dec_fail, s.dec_fail ? 'bad' : '');
     let m = '';
@@ -174,19 +190,24 @@ static esp_err_t status_handler(httpd_req_t *req)
     const int64_t age_ms = camera.last_frame_us == 0 ? -1 :
         (esp_timer_get_time() - camera.last_frame_us) / 1000LL;
 
-    char json[384];
+    char json[768];
     const int len = snprintf(json, sizeof(json),
         "{\"started\":%d,\"connected\":%d,\"frames\":%u,\"drop\":%u,"
-        "\"dec_fail\":%u,\"age_ms\":%lld,\"mask\":%u,"
+        "\"dec_fail\":%u,\"age_ms\":%lld,\"mode\":%d,\"mask\":%u,"
+        "\"finish\":%d,"
         "\"img_w\":%u,\"img_h\":%u,\"block\":%u,\"row_pct\":%u,"
-        "\"ch_pct\":[%u,%u,%u,%u]}",
+        "\"ch_pct\":[%u,%u,%u,%u],"
+        "\"red\":[%d,%u,%u,%u,%u],\"white\":[%d,%u,%u,%u,%u],"
+        "\"hole_l\":[%d,%u,%u,%u,%u],\"hole_r\":[%d,%u,%u,%u,%u]}",
         camera.started ? 1 : 0,
         camera.connected ? 1 : 0,
         (unsigned)camera.received_frames,
         (unsigned)camera.dropped_frames,
         (unsigned)camera.decode_failures,
         (long long)age_ms,
+        (int)camera.mode,
         (unsigned)camera.infrared.black_mask,
+        camera.infrared.finish_detected ? 1 : 0,
         (unsigned)camera.image_width,
         (unsigned)camera.image_height,
         (unsigned)PSEUDO_IR_BLOCK_SIZE,
@@ -194,7 +215,23 @@ static esp_err_t status_handler(httpd_req_t *req)
         (unsigned)PSEUDO_IR_CH1_CENTER_PERCENT,
         (unsigned)PSEUDO_IR_CH2_CENTER_PERCENT,
         (unsigned)PSEUDO_IR_CH3_CENTER_PERCENT,
-        (unsigned)PSEUDO_IR_CH4_CENTER_PERCENT);
+        (unsigned)PSEUDO_IR_CH4_CENTER_PERCENT,
+        camera.ball.red_ball.found, (unsigned)camera.ball.red_ball.center_x,
+        (unsigned)camera.ball.red_ball.center_y,
+        (unsigned)camera.ball.red_ball.width,
+        (unsigned)camera.ball.red_ball.height,
+        camera.ball.white_ball.found, (unsigned)camera.ball.white_ball.center_x,
+        (unsigned)camera.ball.white_ball.center_y,
+        (unsigned)camera.ball.white_ball.width,
+        (unsigned)camera.ball.white_ball.height,
+        camera.ball.left_hole.found, (unsigned)camera.ball.left_hole.center_x,
+        (unsigned)camera.ball.left_hole.center_y,
+        (unsigned)camera.ball.left_hole.width,
+        (unsigned)camera.ball.left_hole.height,
+        camera.ball.right_hole.found, (unsigned)camera.ball.right_hole.center_x,
+        (unsigned)camera.ball.right_hole.center_y,
+        (unsigned)camera.ball.right_hole.width,
+        (unsigned)camera.ball.right_hole.height);
     if (len < 0 || (size_t)len >= sizeof(json)) {
         return ESP_ERR_NO_MEM;
     }

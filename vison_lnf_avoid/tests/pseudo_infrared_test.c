@@ -71,12 +71,17 @@ static void fill_band(unsigned x0, unsigned x1)
     }
 }
 
-static uint8_t sample_mask(void)
+static infrared_sensor_state_t sample_state(void)
 {
     infrared_sensor_state_t state = {0};
     CHECK(pseudo_infrared_sample_rgb888(s_rgb, s_width, s_height,
                                         (size_t)s_width * 3U, &state) == ESP_OK);
-    return state.black_mask;
+    return state;
+}
+
+static uint8_t sample_mask(void)
+{
+    return sample_state().black_mask;
 }
 
 static void test_four_fixed_channels(void)
@@ -117,29 +122,43 @@ static void test_all_white_is_no_line(void)
 
 static void test_finish_bar_lights_every_channel(void)
 {
-    /* CH1/CH4 moved inward to 65%/35% (blocks 76-80 and 40-44 here), so the
-     * four blocks span 40..80 of the 120 px row. A dark run wide enough to be
-     * a finish bar (>= PSEUDO_IR_FINISH_WIDTH_PERCENT -> 84 px) can no longer
-     * slip past an outer block, so the raw mask is already 0x0F on the first
-     * frame and PSEUDO_IR_FINISH_CONFIRM_FRAMES is only a backstop. */
+    /* The real transverse END line only needs to span the four sample blocks
+     * (40..80 here), not 70% of the full camera image. */
     pseudo_infrared_reset();
     clear_white();
-    fill_band(0, 84);
+    fill_band(40, 80);
 
-    CHECK(sample_mask() == IR_ALL_BLACK_MASK);
-    CHECK(sample_mask() == IR_ALL_BLACK_MASK);
+    for (unsigned i = 1U; i < PSEUDO_IR_FINISH_CONFIRM_FRAMES; ++i) {
+        const infrared_sensor_state_t state = sample_state();
+        CHECK(state.black_mask == IR_ALL_BLACK_MASK);
+        CHECK(!state.finish_detected);
+    }
+    const infrared_sensor_state_t confirmed = sample_state();
+    CHECK(confirmed.black_mask == IR_ALL_BLACK_MASK);
+    CHECK(confirmed.finish_detected);
 }
 
 static void test_finish_confirmation_resets(void)
 {
     pseudo_infrared_reset();
     clear_white();
-    fill_band(0, 84);
-    CHECK(sample_mask() == IR_ALL_BLACK_MASK);
+    fill_band(40, 80);
+    infrared_sensor_state_t state = sample_state();
+    CHECK(state.black_mask == IR_ALL_BLACK_MASK);
+    CHECK(!state.finish_detected);
 
     clear_white();                   /* finish bar gone -> confirmation resets */
     fill_band(63, 65);
-    CHECK(sample_mask() == IR_CHANNEL_2_MASK);
+    state = sample_state();
+    CHECK(state.black_mask == IR_CHANNEL_2_MASK);
+    CHECK(!state.finish_detected);
+
+    clear_white();
+    fill_band(40, 80);
+    for (unsigned i = 1U; i < PSEUDO_IR_FINISH_CONFIRM_FRAMES; ++i) {
+        state = sample_state();
+        CHECK(!state.finish_detected);
+    }
 }
 
 static void test_real_image_block_geometry(void)

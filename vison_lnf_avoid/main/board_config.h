@@ -97,7 +97,7 @@
 #define LINE_SEARCH_STALL_MS       400
 #define LINE_SEARCH_STALL_COUNTS     2
 #define LINE_LOST_STOP_MS         5000
-#define LINE_ALL_BLACK_STOP_MS     100
+#define LINE_ALL_BLACK_STOP_MS     300
 #define LINE_INVALID_GRACE_MS      100
 #define LINE_START_DELAY_MS       3000
 #define LINE_LOG_PERIOD_MS         100
@@ -127,6 +127,10 @@
  * four-zone mapping only needs the coarse 60 px lateral resolution, which is
  * unchanged from the old 480x854 setup. */
 #define CAMERA_DECODE_SCALE                   8
+/* Keep the proven 1/8 line-following path untouched.  Only after END is
+ * confirmed does the decoder switch to 1/4 for the much smaller ball/hole
+ * features.  The UVC request and input frame rate do not change. */
+#define CAMERA_BALL_DECODE_SCALE              4
 
 /* Camera mounting correction. The current module is mounted upside down,
  * so both axes are mirrored (equivalent to a 180-degree rotation). These
@@ -173,15 +177,15 @@
  * Bit 0 = channel 1 = car right, bit 3 = channel 4 = car left (authoritative
  * from the reference project lnf_avoid). A block counts as "black" when at
  * least PSEUDO_IR_BLOCK_DARK_MIN pixels fall below the row's adaptive
- * threshold; a confirmed wide dark run across the sample row (finish bar) is
- * reported as all-black so the infrared state machine stops on it.
+ * threshold; all four blocks black for PSEUDO_IR_FINISH_CONFIRM_FRAMES frames
+ * confirms the narrow transverse END line and latches finish_detected.
  *
  * Calibration knobs (verify on the actual floor at low speed):
  * - PSEUDO_IR_SAMPLE_ROW_PERCENT: which image row maps to the distance ahead
  *   of the car where the physical infrared board sits. Raise it to sample a
  *   row closer to the car (wider in pixels).
  * - PSEUDO_IR_BLOCK_SIZE: sampled block side in pixels. On the 60 px wide
- *   decoded image at 4 the block spans ~5 px. Keep the block <= the spacing to
+ *   decoded image the block spans ~5 px. Keep the block <= the spacing to
  *   the neighbouring channel so channels stay separable; larger blocks make
  *   narrow lines easier to catch but blur channel separation and can make two
  *   adjacent channels light together. Verify on the floor at low speed:
@@ -224,8 +228,94 @@
 #define PSEUDO_IR_SAMPLE_ROW_PERCENT          70
 #define PSEUDO_IR_BLACK_MARGIN                40
 #define PSEUDO_IR_BLOCK_DARK_MIN               2
-#define PSEUDO_IR_FINISH_WIDTH_PERCENT        70
 #define PSEUDO_IR_FINISH_CONFIRM_FRAMES        3
+
+/* ------------------------------------------------------------------ */
+/* Ball-mode camera overlays retained as route-calibration diagnostics. */
+/* Image positions are percentages and are not used to steer the car.  */
+
+/* One-shot gimbal tilt (servo shaft degrees, clamped to
+ * CAMERA_TILT_SERVO_MIN_DEG..MAX_DEG) commanded once at the LINE->BALL
+ * hand-over. Defaults to the line-following centre so nothing moves until
+ * you calibrate: nudge it a few degrees at a time until both balls and both
+ * holes sit inside the frame at the hand-over spot (confirm the up/down
+ * direction on the bench first). BALL_GIMBAL_SETTLE_MS waits for the MG90S to
+ * arrive; the car is stationary at the hand-over, so it only delays the first
+ * ball control tick. The gimbal is never moved again during the ball phase. */
+#define BALL_GIMBAL_TILT_DEG                    85
+#define BALL_GIMBAL_SETTLE_MS                  600
+
+/* RGB888 segmentation. Red uses channel dominance. White uses a bright
+ * low-chroma centre surrounded by a darker local ring. Black holes are
+ * compact dark connected components; long thin black track lines are rejected. */
+#define BALL_RED_R_MIN                       115
+#define BALL_RED_DOMINANCE                    35
+#define BALL_RED_MIN_AREA                      5
+#define BALL_RED_MAX_AREA                   1800
+#define BALL_WHITE_CENTER_LUMA               175
+#define BALL_WHITE_MAX_CHROMA                 45
+#define BALL_WHITE_RING_RADIUS                 4
+#define BALL_WHITE_LOCAL_CONTRAST              9
+#define BALL_WHITE_MIN_AREA                    2
+#define BALL_WHITE_MAX_AREA                  500
+#define BALL_HOLE_MAX_LUMA                     90
+#define BALL_HOLE_MIN_AREA                    18
+/* The real pockets are 15x10 cm: at the 1/4 ball decode a close pocket can
+ * span several thousand pixels, so the old 2200 px ceiling rejected it during
+ * the final approach. */
+#define BALL_HOLE_MAX_AREA                  4800
+#define BALL_HOLE_MIN_FILL_PERCENT            42
+/* 15x10 cm pockets foreshorten into ~4-5:1 flat strips at the far table edge;
+ * the 3x3 density pass (kills 1-2 px lines) plus the fill gate still reject
+ * cables and tape edges, and once both pockets pass the upper-band scan the
+ * full-frame fallback (which could pick up floor clutter) never runs. */
+#define BALL_HOLE_MAX_ASPECT_NUM               5
+#define BALL_HOLE_MAX_ASPECT_DEN               1
+/* Hole search prefers the upper frame: pockets lie beyond the ball while the
+ * chassis, its shadow and floor cables sit at the bottom. Components whose
+ * centroid is at or below this percent of the image height are ignored in the
+ * first pass; if fewer than two holes survive, the scan is repeated over the
+ * full frame (the pocket image sinks as the car approaches). Raise toward 100
+ * if the pocket disappears during the final approach. */
+#define BALL_HOLE_SEARCH_MAX_Y_PERCENT        70
+/* When only one pocket is in frame, it is adopted into the left/right identity
+ * established earlier by nearest-neighbour continuity, provided it moved less
+ * than this percent of the image width since the previous frame. Larger jumps
+ * (fast SEARCH spins) keep the safe both-visible rule instead. */
+#define BALL_HOLE_TRACK_MAX_MOVE_PERCENT      25
+
+/* Fixed route after END. Commands use the existing -1000..1000 convention;
+ * positive lateral is car-left and positive turn is right. Counts below are
+ * safe starting values, not dimensions: mark the ball centres, run one stage
+ * at a time, and calibrate on the actual paper surface before a full attempt.
+ *
+ * Route: settle -> advance -> right turn -> red lane -> push red -> retreat ->
+ * return to the common centre -> white lane -> push white. Because both holes
+ * are on the same edge, their approach lines are parallel and no second turn
+ * is needed. Lateral counts are normalized to the rear-wheel encoder count. */
+#define BALL_SCRIPT_SETTLE_MS                 300
+#define BALL_SCRIPT_ADVANCE_FORWARD           100
+#define BALL_SCRIPT_ADVANCE_COUNTS            700
+/* Reuse the proven line-search turning output. LINE_SEARCH_30_DEG_COUNTS is
+ * the sum of both side wheels, while the ball state uses a per-wheel target;
+ * therefore 90 degrees starts at 3 * (30-degree sum / 2 wheels). */
+#define BALL_SCRIPT_ROTATE_RIGHT_TURN          LINE_CORNER_ROTATE_TURN
+#define BALL_SCRIPT_ROTATE_RIGHT_COUNTS       \
+    (3 * LINE_SEARCH_30_DEG_COUNTS / 2)
+#define BALL_SCRIPT_RED_ALIGN_LATERAL        (-100)
+#define BALL_SCRIPT_RED_ALIGN_COUNTS          400
+#define BALL_SCRIPT_WHITE_ALIGN_LATERAL        100
+#define BALL_SCRIPT_WHITE_ALIGN_COUNTS        400
+#define BALL_SCRIPT_PUSH_FORWARD                85
+#define BALL_SCRIPT_RETREAT_FORWARD           (-100)
+#define BALL_SCRIPT_RED_PUSH_COUNTS            900
+#define BALL_SCRIPT_WHITE_PUSH_COUNTS          900
+
+/* Every moving state stops on timeout or if its slowest required wheel does
+ * not advance. A zero distance is allowed and skips that calibrated stage. */
+#define BALL_SCRIPT_STATE_TIMEOUT_MS         12000
+#define BALL_SCRIPT_STALL_TIMEOUT_MS           600
+#define BALL_SCRIPT_STALL_MIN_COUNTS             2
 
 /* HC-SR04 ultrasonic ranger. ECHO is a 5 V signal: use a divider/level shifter. */
 #define ULTRASONIC_TRIG_GPIO         14

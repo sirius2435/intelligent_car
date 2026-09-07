@@ -123,6 +123,7 @@ esp_err_t infrared_sensor_sample(infrared_sensor_state_t *state)
     }
 
     state->changed = false;
+    state->finish_detected = false;
     if (s_candidate_count >= IR_DEBOUNCE_SAMPLE_COUNT &&
         s_stable_mask != s_candidate_mask) {
         s_stable_mask = s_candidate_mask;

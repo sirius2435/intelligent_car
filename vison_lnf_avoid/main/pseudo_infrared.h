@@ -29,9 +29,8 @@ extern "C" {
  * under the PSEUDO_IR_* macros. Semantics match infrared_sensor_sample(): a
  * new mask is published once per decoded frame; between frames the previous
  * mask is held so the 10 ms control loop sees a stable value. A confirmed
- * finish marker (PSEUDO_IR_FINISH_CONFIRM_FRAMES consecutive frames with a
- * wide dark run across the sample row) is reported as all-black, which
- * triggers the infrared controller's all-black stop.
+ * finish marker (PSEUDO_IR_FINISH_CONFIRM_FRAMES consecutive frames with all
+ * four blocks black) is latched and triggers the controller's all-black stop.
  */
 esp_err_t pseudo_infrared_sample_rgb888(const uint8_t *rgb,
                                         unsigned width,

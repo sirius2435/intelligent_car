@@ -4,6 +4,7 @@
 
 static uint8_t s_stable_mask;
 static unsigned s_finish_confirm;
+static bool s_finish_latched;
 
 static uint8_t pixel_luma(const uint8_t *pixel)
 {
@@ -45,6 +46,7 @@ esp_err_t pseudo_infrared_sample_rgb888(const uint8_t *rgb,
         return ESP_ERR_INVALID_ARG;
     }
     state->changed = false;
+    state->finish_detected = s_finish_latched;
     if (rgb == NULL || width < 4U || height < 4U ||
         stride_bytes < (size_t)width * 3U) {
         state->black_mask = s_stable_mask;  /* hold the last known mask */
@@ -105,24 +107,10 @@ esp_err_t pseudo_infrared_sample_rgb888(const uint8_t *rgb,
         }
     }
 
-    /* Finish marker: a wide dark run across the sample row. */
-    unsigned longest_run = 0U;
-    unsigned run = 0U;
-    for (unsigned x = 0U; x < width; ++x) {
-        const bool dark =
-            pixel_luma(pixel_at(rgb, width, height, stride_bytes,
-                                x, sample_y_clamped)) <= (uint8_t)threshold;
-        if (dark) {
-            ++run;
-            if (run > longest_run) {
-                longest_run = run;
-            }
-        } else {
-            run = 0U;
-        }
-    }
-    const bool finish_candidate =
-        longest_run * 100U >= width * PSEUDO_IR_FINISH_WIDTH_PERCENT;
+    /* The real END is only a 2-3 cm transverse line, not a bar spanning most
+     * of the camera image. Treat all four fixed blocks seeing it together as
+     * the END shape; consecutive-frame confirmation rejects a one-frame hit. */
+    const bool finish_candidate = mask == IR_ALL_BLACK_MASK;
     if (finish_candidate) {
         if (s_finish_confirm < PSEUDO_IR_FINISH_CONFIRM_FRAMES) {
             ++s_finish_confirm;
@@ -131,6 +119,9 @@ esp_err_t pseudo_infrared_sample_rgb888(const uint8_t *rgb,
         s_finish_confirm = 0U;
     }
     if (s_finish_confirm >= PSEUDO_IR_FINISH_CONFIRM_FRAMES) {
+        s_finish_latched = true;
+    }
+    if (s_finish_latched) {
         mask = IR_ALL_BLACK_MASK;
     }
 
@@ -139,6 +130,7 @@ esp_err_t pseudo_infrared_sample_rgb888(const uint8_t *rgb,
         s_stable_mask = mask;
     }
     state->black_mask = s_stable_mask;
+    state->finish_detected = s_finish_latched;
     return ESP_OK;
 }
 
@@ -146,6 +138,7 @@ void pseudo_infrared_reset(void)
 {
     s_stable_mask = 0U;
     s_finish_confirm = 0U;
+    s_finish_latched = false;
 }
 
 void pseudo_infrared_format(uint8_t black_mask, char output[5])

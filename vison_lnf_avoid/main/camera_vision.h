@@ -4,11 +4,17 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "ball_vision.h"
 #include "infrared_sensor.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+typedef enum {
+    CAMERA_VISION_LINE = 0,
+    CAMERA_VISION_BALL,
+} camera_vision_mode_t;
 
 typedef struct {
     bool started;
@@ -19,11 +25,16 @@ typedef struct {
     int64_t last_frame_us;
     uint16_t image_width;
     uint16_t image_height;
+    camera_vision_mode_t mode;
     infrared_sensor_state_t infrared;
+    ball_vision_result_t ball;
 } camera_vision_status_t;
 
 esp_err_t camera_vision_start(void);
 esp_err_t camera_vision_get_status(camera_vision_status_t *status);
+/* Mode changes only the software decode scale/analyzer. UVC capture settings
+ * and the camera gimbal remain unchanged. */
+esp_err_t camera_vision_set_mode(camera_vision_mode_t mode);
 
 /* Copies the most recent raw MJPEG frame (untouched camera payload) for
  * network streaming. Returns ESP_ERR_INVALID_STATE when no frame has been

@@ -6,6 +6,8 @@ idf_component_register(
         "drive.c"
         "line_follow.c"
         "pseudo_infrared.c"
+        "ball_vision.c"
+        "ball_push.c"
         "camera_vision.c"
         "camera_stream.cpp"
         "camera_gimbal.c"
