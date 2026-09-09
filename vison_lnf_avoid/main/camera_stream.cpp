@@ -84,7 +84,7 @@ h3{margin:4px 0 8px}
 <div class="kv"><span id="kvlabel">伪红外通道（左→右）</span><span id="mask">-</span></div>
 <div class="kv"><span>帧序号 / 累计丢帧 / 解码失败</span><span id="seq">-</span></div>
 <div class="kv"><span>画面年龄</span><span id="age">-</span></div>
-<p class="tip">循迹阶段：绿色方块=4个采样块，亮起表示压到黑线（左→右：通道4→通道1），全黑=终点标记。推球阶段：半透明圆+十字=红/蓝球识别（坐标=120×80工作图像素），青色虚线框=识别到的暗色底袋区域。端口81的裸 MJPEG 保持相机原始方向。</p>
+<p class="tip">循迹阶段：绿色方块=4个采样块，亮起表示压到黑线（左→右：通道4→通道1），全黑=终点标记。推球阶段：半透明圆+十字=红/蓝球识别（坐标=120×80工作图像素），青色虚线框=识别到的暗色底袋区域，橙色虚线以下阴影=蓝球丢弃区（BALL_BLUE_MAX_CY_PX，底部车体蓝色干扰不识别）。端口81的裸 MJPEG 保持相机原始方向。</p>
 </div>
 <script>
 document.getElementById('host').textContent = location.hostname;
@@ -139,14 +139,28 @@ function drawLineOverlay(s){
 }
 
 /* Pocket-push overlay: red/blue ball blobs with crosshair + detected pocket
- * regions (dark pockets at the far table edge) framed in cyan. Coordinates
- * arrive in LOGICAL working-grid px (img_w x img_h) and are scaled to the
- * displayed image. */
+ * regions (dark pockets at the far table edge) framed in cyan, plus the
+ * blue-ball rejection band below BALL_BLUE_MAX_CY_PX shaded in orange.
+ * Coordinates arrive in LOGICAL working-grid px (img_w x img_h) and are
+ * scaled to the displayed image. */
 function drawPushOverlay(s){
   const f = fitCanvas(); if(!f || !s.img_w || !s.img_h) return;
   const c = f.c, w = f.w, h = f.h;
   const X = x => x*w/s.img_w, Y = y => y*h/s.img_h;
   const R = r => Math.max(2, r*w/s.img_w);
+  /* Blue-ball cutoff zone: blobs whose centroid lands in the shaded band are
+   * discarded by the firmware (chassis / wiring / blue hardware down there). */
+  if(s.blue_max_cy > 0 && s.blue_max_cy < s.img_h){
+    const yc = Y(s.blue_max_cy);
+    c.fillStyle = 'rgba(255,150,40,.14)';
+    c.fillRect(0, yc, w, h-yc);
+    c.strokeStyle = 'rgba(255,150,40,.8)'; c.lineWidth = 1.5;
+    c.setLineDash([6,4]);
+    c.beginPath(); c.moveTo(0,yc); c.lineTo(w,yc); c.stroke();
+    c.setLineDash([]);
+    c.fillStyle = 'rgba(255,170,70,.95)'; c.font = 'bold 10px system-ui,sans-serif';
+    c.fillText('蓝球丢弃区 cy>' + s.blue_max_cy, 4, Math.min(h-4, yc+12));
+  }
   const balls = [['红', s.r, 'rgba(255,70,70,.9)'], ['蓝', s.b, 'rgba(70,130,255,.95)']];
   for(const [label, bb, col] of balls){
     if(!bb || !bb[0]) continue;
@@ -298,6 +312,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "{\"started\":%d,\"connected\":%d,\"frames\":%u,\"drop\":%u,"
         "\"dec_fail\":%u,\"age_ms\":%lld,\"mask\":%u,"
         "\"img_w\":%u,\"img_h\":%u,\"block\":%u,\"row_pct\":%u,"
+        "\"blue_max_cy\":%u,"
         "\"ch_pct\":[%u,%u,%u,%u],\"mode\":%d,"
         "\"r\":[%d,%d,%d,%d],\"b\":[%d,%d,%d,%d],"
         "\"p1\":[%d,%d,%d,%d,%d],\"p2\":[%d,%d,%d,%d,%d],"
@@ -320,6 +335,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         (unsigned)camera.image_height,
         (unsigned)PSEUDO_IR_BLOCK_SIZE,
         (unsigned)PSEUDO_IR_SAMPLE_ROW_PERCENT,
+        (unsigned)BALL_BLUE_MAX_CY_PX,
         (unsigned)PSEUDO_IR_CH1_CENTER_PERCENT,
         (unsigned)PSEUDO_IR_CH2_CENTER_PERCENT,
         (unsigned)PSEUDO_IR_CH3_CENTER_PERCENT,
