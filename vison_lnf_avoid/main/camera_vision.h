@@ -3,18 +3,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "esp_err.h"
 #include "ball_vision.h"
+#include "esp_err.h"
 #include "infrared_sensor.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef enum {
-    CAMERA_VISION_LINE = 0,
-    CAMERA_VISION_BALL,
-} camera_vision_mode_t;
 
 typedef struct {
     bool started;
@@ -25,16 +20,29 @@ typedef struct {
     int64_t last_frame_us;
     uint16_t image_width;
     uint16_t image_height;
-    camera_vision_mode_t mode;
     infrared_sensor_state_t infrared;
-    ball_vision_result_t ball;
 } camera_vision_status_t;
+
+/* The vision pipeline decodes every frame at one of two scales. LINE mode is
+ * the line-following task (CAMERA_DECODE_SCALE, cheap 60x40 frames whose
+ * output feeds pseudo_infrared). PUSH mode is the pocket-push task: frames
+ * decode at PUSH_CAMERA_DECODE_SCALE (120x80), pseudo-infrared sampling is
+ * skipped and ball_vision_analyze() runs on each decoded frame instead. The
+ * mode switch takes effect on the next decoded frame. */
+typedef enum {
+    CAMERA_VISION_MODE_LINE = 0,
+    CAMERA_VISION_MODE_PUSH,
+} camera_vision_mode_t;
 
 esp_err_t camera_vision_start(void);
 esp_err_t camera_vision_get_status(camera_vision_status_t *status);
-/* Mode changes only the software decode scale/analyzer. UVC capture settings
- * and the camera gimbal remain unchanged. */
 esp_err_t camera_vision_set_mode(camera_vision_mode_t mode);
+camera_vision_mode_t camera_vision_get_mode(void);
+
+/* Latest ball_vision_analyze() result (PUSH mode only): a tiny struct copy
+ * under the same lock as the status, so the 10 ms control loop never copies
+ * frame data. Returns ESP_ERR_INVALID_STATE before the pipeline started. */
+esp_err_t camera_vision_get_ball_result(ball_vision_result_t *out);
 
 /* Copies the most recent raw MJPEG frame (untouched camera payload) for
  * network streaming. Returns ESP_ERR_INVALID_STATE when no frame has been

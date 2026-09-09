@@ -130,7 +130,7 @@
 /* Keep the proven 1/8 line-following path untouched.  Only after END is
  * confirmed does the decoder switch to 1/4 for the much smaller ball/hole
  * features.  The UVC request and input frame rate do not change. */
-#define CAMERA_BALL_DECODE_SCALE              4
+#define PUSH_CAMERA_DECODE_SCALE              4
 
 /* Camera mounting correction. The current module is mounted upside down,
  * so both axes are mirrored (equivalent to a 180-degree rotation). These
@@ -231,91 +231,246 @@
 #define PSEUDO_IR_FINISH_CONFIRM_FRAMES        3
 
 /* ------------------------------------------------------------------ */
-/* Ball-mode camera overlays retained as route-calibration diagnostics. */
-/* Image positions are percentages and are not used to steer the car.  */
+/* Pocket-push task (after the line-following finish).                  */
+/* ------------------------------------------------------------------ */
+
+/* During the push phase the vision pipeline decodes each MJPEG frame at
+ * PUSH_CAMERA_DECODE_SCALE instead of CAMERA_DECODE_SCALE, trading software
+ * JPEG-decode throughput (scale 4 -> about 4x the pixels -> <= ~8 fps) for a
+ * 120x80 working image on which small balls and pockets are detectable.
+ * The line-following phase keeps scale 8. Values must be one of 2/4/8. */
+#define PUSH_CAMERA_DECODE_SCALE      4
 
 /* One-shot gimbal tilt (servo shaft degrees, clamped to
  * CAMERA_TILT_SERVO_MIN_DEG..MAX_DEG) commanded once at the LINE->BALL
- * hand-over. Defaults to the line-following centre so nothing moves until
- * you calibrate: nudge it a few degrees at a time until both balls and both
- * holes sit inside the frame at the hand-over spot (confirm the up/down
- * direction on the bench first). BALL_GIMBAL_SETTLE_MS waits for the MG90S to
- * arrive; the car is stationary at the hand-over, so it only delays the first
- * ball control tick. The gimbal is never moved again during the ball phase. */
-#define BALL_GIMBAL_TILT_DEG                    85
-#define BALL_GIMBAL_SETTLE_MS                  600
+ * hand-over. Adjust this to point the camera at the balls/pockets on your
+ * table: 110 is the straight-forward centre on the current mount. The gimbal
+ * is never moved again during the push phase. Settle time waits for the MG90S
+ * to arrive; the car is stationary at the hand-over, so it only delays the
+ * first push control tick. */
+#define BALL_GIMBAL_TILT_DEG                110
+#define BALL_GIMBAL_SETTLE_MS              600
 
-/* RGB888 segmentation. Red uses channel dominance. White uses a bright
- * low-chroma centre surrounded by a darker local ring. Black holes are
- * compact dark connected components; long thin black track lines are rejected. */
-#define BALL_RED_R_MIN                       115
-#define BALL_RED_DOMINANCE                    35
-#define BALL_RED_MIN_AREA                      5
-#define BALL_RED_MAX_AREA                   1800
-#define BALL_WHITE_CENTER_LUMA               175
-#define BALL_WHITE_MAX_CHROMA                 45
-#define BALL_WHITE_RING_RADIUS                 4
-#define BALL_WHITE_LOCAL_CONTRAST              9
-#define BALL_WHITE_MIN_AREA                    2
-#define BALL_WHITE_MAX_AREA                  500
-#define BALL_HOLE_MAX_LUMA                     90
-#define BALL_HOLE_MIN_AREA                    18
-/* The real pockets are 15x10 cm: at the 1/4 ball decode a close pocket can
- * span several thousand pixels, so the old 2200 px ceiling rejected it during
- * the final approach. */
-#define BALL_HOLE_MAX_AREA                  4800
-#define BALL_HOLE_MIN_FILL_PERCENT            42
-/* 15x10 cm pockets foreshorten into ~4-5:1 flat strips at the far table edge;
- * the 3x3 density pass (kills 1-2 px lines) plus the fill gate still reject
- * cables and tape edges, and once both pockets pass the upper-band scan the
- * full-frame fallback (which could pick up floor clutter) never runs. */
-#define BALL_HOLE_MAX_ASPECT_NUM               5
-#define BALL_HOLE_MAX_ASPECT_DEN               1
-/* Hole search prefers the upper frame: pockets lie beyond the ball while the
- * chassis, its shadow and floor cables sit at the bottom. Components whose
- * centroid is at or below this percent of the image height are ignored in the
- * first pass; if fewer than two holes survive, the scan is repeated over the
- * full frame (the pocket image sinks as the car approaches). Raise toward 100
- * if the pocket disappears during the final approach. */
-#define BALL_HOLE_SEARCH_MAX_Y_PERCENT        70
-/* When only one pocket is in frame, it is adopted into the left/right identity
- * established earlier by nearest-neighbour continuity, provided it moved less
- * than this percent of the image width since the previous frame. Larger jumps
- * (fast SEARCH spins) keep the safe both-visible rule instead. */
-#define BALL_HOLE_TRACK_MAX_MOVE_PERCENT      25
+/* Ball-to-pocket task mapping, fixed per run.
+ * color: 0 = BALL_COLOR_RED, 1 = BALL_COLOR_BLUE (ball_vision.h).
+ * pocket: 0 = left  (smaller logical x), 1 = right.
+ * Default: red ball into the LEFT pocket first, then blue into the RIGHT. */
+#define BALL_TASK_FIRST_COLOR         0
+#define BALL_TASK_FIRST_POCKET        0
+#define BALL_TASK_SECOND_COLOR        1
+#define BALL_TASK_SECOND_POCKET       1
 
-/* Fixed route after END. Commands use the existing -1000..1000 convention;
- * positive lateral is car-left and positive turn is right. Counts below are
- * safe starting values, not dimensions: mark the ball centres, run one stage
- * at a time, and calibrate on the actual paper surface before a full attempt.
+/* Red-ball pixel test (decoded RGB888). PURE DOMINANCE - no absolute R or
+ * luma floor: underexposure scales every channel down together, so the
+ * R-G / R-B gap survives while an absolute floor kills the whole ball
+ * (measured on-site: white board reads only 145-182 under the lamp). JPEG
+ * chroma noise on the neutral board stays below ~20, so 25 gives the
+ * small far-away red ball enough margin after JPEG/downscale. */
+#define BALL_RED_MIN_RG_DOM           25
+#define BALL_RED_MIN_RB_DOM           25
+
+/* The red ball is small at the start of the push task.  Keep the global
+ * shape gates strict for blue-ball detection, but use a slightly more
+ * tolerant gate for small red blobs.  The compactness check still rejects
+ * the elongated red LEDs / car hardware visible at the bottom of the frame. */
+#define BALL_RED_MIN_AREA_PX            8
+#define BALL_RED_COMPACTNESS_MIN       40
+#define BALL_RED_MAX_ASPECT           220
+#define BALL_RED_AXIS_RATIO_MIN_MILLE 600
+
+/* Blue-ball pixel test (decoded RGB888) for a glossy BLUE ball on a WHITE
+ * background board under a table lamp.
  *
- * Route: settle -> advance -> right turn -> red lane -> push red -> retreat ->
- * return to the common centre -> white lane -> push white. Because both holes
- * are on the same edge, their approach lines are parallel and no second turn
- * is needed. Lateral counts are normalized to the rear-wheel encoder count. */
-#define BALL_SCRIPT_SETTLE_MS                 300
-#define BALL_SCRIPT_ADVANCE_FORWARD           100
-#define BALL_SCRIPT_ADVANCE_COUNTS            700
-/* Reuse the proven line-search turning output. LINE_SEARCH_30_DEG_COUNTS is
- * the sum of both side wheels, while the ball state uses a per-wheel target;
- * therefore 90 degrees starts at 3 * (30-degree sum / 2 wheels). */
-#define BALL_SCRIPT_ROTATE_RIGHT_TURN          LINE_CORNER_ROTATE_TURN
-#define BALL_SCRIPT_ROTATE_RIGHT_COUNTS       \
-    (3 * LINE_SEARCH_30_DEG_COUNTS / 2)
-#define BALL_SCRIPT_RED_ALIGN_LATERAL        (-100)
-#define BALL_SCRIPT_RED_ALIGN_COUNTS          400
-#define BALL_SCRIPT_WHITE_ALIGN_LATERAL        100
-#define BALL_SCRIPT_WHITE_ALIGN_COUNTS        400
-#define BALL_SCRIPT_PUSH_FORWARD                85
-#define BALL_SCRIPT_RETREAT_FORWARD           (-100)
-#define BALL_SCRIPT_RED_PUSH_COUNTS            900
-#define BALL_SCRIPT_WHITE_PUSH_COUNTS          900
+ * Same philosophy as the red test: PURE CHROMA DOMINANCE (B-R / B-G), no
+ * brightness window. Underexposure scales all three channels down together,
+ * so the dominance gap survives while a luma window kills the ball.
+ *
+ * This is strictly more robust than the white-ball test it replaces: the
+ * board and its shadows are NEUTRAL, so they can never fake a blue-dominant
+ * pixel. No glare-core / dark-vs-board reasoning is needed any more.
+ *
+ * BALL_BLUE_MIN_B and BALL_BLUE_MIN_SAT are noise floors for the DARK
+ * regions of the scene (black track, pocket interior), where JPEG chroma
+ * noise is relatively large compared with the signal. A genuinely black
+ * pocket reads near-neutral and fails both.
+ *
+ * CAVEAT: a pocket painted in saturated blue would satisfy the same pixel
+ * test, and only the geometry gates (BALL_COMPACTNESS_MIN / MAX_ASPECT /
+ * AXIS_RATIO_MIN_MILLE) would separate the two. The pockets on this table
+ * read DARK and NEUTRAL in the camera (see POCKET_BLACK_*), so the pixel
+ * test is safe here - if the paint ever reads blue on site, restore a
+ * blue-chroma pocket class and give it priority over the ball. */
+#define BALL_BLUE_MIN_BR_DOM            25   /* B - R dominance */
+#define BALL_BLUE_MIN_BG_DOM            25   /* B - G dominance */
+#define BALL_BLUE_MIN_B                 50   /* below this: dark track / shadow noise */
+#define BALL_BLUE_MIN_SAT               45   /* a real blue ball is strongly saturated */
+/* A SMALL ball (radius 2-4 px on the push grid) survives JPEG soft-decoding
+ * with only a few grey levels of shading across it, so the required sphere
+ * spread must not be too strict - flat glare patches still read spread < 4. */
+#define BALL_BLUE_GRADIENT_MIN           3   /* sphere shading spread */
+#define BALL_BLUE_MAX_CY_PX             66   /* reject chassis/hardware in the bottom of the 120x80 view */
 
-/* Every moving state stops on timeout or if its slowest required wheel does
- * not advance. A zero distance is allowed and skips that calibrated stage. */
-#define BALL_SCRIPT_STATE_TIMEOUT_MS         12000
-#define BALL_SCRIPT_STALL_TIMEOUT_MS           600
-#define BALL_SCRIPT_STALL_MIN_COUNTS             2
+/* Ball blob size/shape gating. Defaults target the 120x80 push grid; rescale
+ * proportionally if PUSH_CAMERA_DECODE_SCALE changes. radius is used by the
+ * controller as a DISTANCE PROXY (bigger ball = closer to the camera).
+ *
+ * MEASURED ON THE REAL TABLE: at push-start distances the ball is SMALL in
+ * the 120x80 grid - roughly the size of one pseudo-IR block plus a bit
+ * (diameter ~6 px, radius ~3 px, area ~25 px). So BALL_MIN_AREA_PX must stay
+ * low enough for a radius-2..3 px disk to pass (a radius-2 disk is ~12 px);
+ * anything below that is one or two pixels and cannot be tracked anyway.
+ * The upper end must cover a ball AT THE BUMPER (~radius 30 px), where the
+ * controller's CLOSE_RADIUS back-off logic takes over.
+ * BALL_COMPACTNESS_MIN is a bounding-box fill percentage (100*area/(w*h));
+ * a perfect disk fills ~79%, glare streaks and tails score far lower.
+ * BALL_MAX_ASPECT bounds the bbox aspect (longer*100/shorter), which rejects
+ * elongated glare bars a disk-like fill test alone cannot.
+ * BALL_AXIS_RATIO_MIN_MILLE is the SECOND-MOMENT axis ratio (minor/major,
+ * per mille): it rejects crescent / arc-shaped glare (track bends read as
+ * half-moons of light, whose minor axis is far shorter than the major one)
+ * while still accepting the slightly elliptical projection of a ball seen
+ * at an angle. A disk scores ~1000, a half-moon ~400-500. */
+#define BALL_MIN_AREA_PX              10   /* radius ~= 1.8 px (far ball floor) */
+#define BALL_MAX_AREA_PX            3200   /* radius ~= 32 px (ball at bumper) */
+#define BALL_CLOSE_RADIUS_PX          14   /* above this: too close to push */
+#define BALL_COMPACTNESS_MIN          50   /* bbox fill %; disk ~= 79; glare reject */
+#define BALL_MAX_ASPECT              160   /* bbox long side *100 / short side */
+#define BALL_AXIS_RATIO_MIN_MILLE    750   /* minor/major of blob moments */
+
+/* Pocket detection: the side pockets are represented as BLACK regions on
+ * the white background board, at the far edge of the table. Only the far
+ * band is scanned - logical y above POCKET_REGION_MAX_Y_PERCENT of the
+ * frame height. This keeps most of the black track/finish bar in the lower
+ * half out of the pocket test.
+ *
+ * A pocket pixel is simply dark + low saturation. This intentionally does
+ * not depend on blue paint; the physical pocket is treated as a black area.
+ * Keep the threshold conservative enough to reject ordinary grey shadows. */
+#define POCKET_REGION_MAX_Y_PERCENT   55
+#define POCKET_BLACK_MAX_LUMA          85   /* black-region brightness ceiling */
+#define POCKET_BLACK_MAX_SAT           85   /* reject strongly colored objects */
+#define POCKET_MIN_AREA_PX             25   /* valid pocket must also touch the far image edge */
+#define POCKET_EDGE_MIN_AREA_PX        12   /* edge-zone fallback minimum */
+#define POCKET_EDGE_MIN_TOP_PIXELS      3   /* must actually touch the far edge */
+#define POCKET_EDGE_TOP_ROWS_PERCENT   12   /* top boundary strip used by fallback */
+#define POCKET_EDGE_TOUCH_ROWS_PIXELS   6   /* ordinary black components must touch this edge zone */
+/* Virtual pocket x (percent of logical width) used for aiming when the real
+ * pocket is out of view: the car first rotates toward this bearing, then
+ * continues with visual feedback. */
+#define POCKET_FALLBACK_LEFT_X_PERCENT   18
+#define POCKET_FALLBACK_RIGHT_X_PERCENT  82
+
+/* Push controller speeds/timings. PWM commands are -1000..1000 unless noted.
+ * Rotation counts reuse the LINE_SEARCH chassis calibration (a car rotation of
+ * ~30 deg moves |dL|+|dR| by PUSH_SCAN_30_DEG_COUNTS encoder counts). */
+#define PUSH_APPROACH_FORWARD           55   /* base forward command for visual tracking */
+#define PUSH_START_FORWARD             150  /* slower startup straight run */
+#define PUSH_START_FORWARD_MS          650  /* clearly visible but gentler initial straight run */
+#define PUSH_CREEP_FORWARD              55   /* legacy */
+#define PUSH_CREEP_COUNTS              900   /* legacy */
+#define PUSH_APPROACH_FORWARD_NEAR      40   /* very slow near-ball approach */
+#define PUSH_APPROACH_FORWARD_MID       55
+#define PUSH_APPROACH_FORWARD_FAR       75
+#define PUSH_APPROACH_LATERAL_SPEED      80   /* slow strafe to avoid brushing the ball */
+#define PUSH_APPROACH_X_HARD_PX         10   /* outside this: strafe only, no forward */
+#define PUSH_APPROACH_DEADBAND_PX       10   /* visual X deadband used by ball_push.c */
+#define PUSH_APPROACH_NEAR_Y_PX         46   /* close enough to hand over to ALIGN, but still before bumper range */
+#define PUSH_APPROACH_NEAR_RADIUS_PX     8
+#define PUSH_APPROACH_LOST_HOLD_FRAMES   3   /* briefly stop/hold before recovery */
+#define PUSH_APPROACH_LOST_MAX_FRAMES    6
+#define PUSH_APPROACH_FORWARD_MIN_MS   650   /* mandatory straight phase before ALIGN */
+#define PUSH_APPROACH_STRAFE_TIMEOUT_MS 2000  /* phase 0 strafe timeout to prevent deadlock */
+
+#define PUSH_SCAN_30_DEG_COUNTS        160
+#define PUSH_SCAN_FIRST_COUNTS    (4 * PUSH_SCAN_30_DEG_COUNTS)
+#define PUSH_SCAN_SECOND_COUNTS   (8 * PUSH_SCAN_30_DEG_COUNTS)
+#define PUSH_SCAN_MAX_LEGS              4
+#define PUSH_SCAN_TURN                 150   /* slower scan rotation to give vision more time to spot balls */
+#define PUSH_SCAN_FINE_TURN            120   /* slower fine scan rotation */
+#define PUSH_SCAN_STALL_MS             400
+#define PUSH_SCAN_STALL_COUNTS          2
+
+/* Far-sprint: open-loop charge triggered in APPROACH phase 1 when the ball
+ * is far but already geometrically aligned with its target pocket. This
+ * bypasses the near-field vision blind spot (chassis shadow / Y-cutoff)
+ * that makes the blue ball unrecognizable at close range in poor light.
+ *
+ * The sprint is purely encoder-supervised (like HARD_PUSH but longer), so
+ * its accuracy depends on the far-field alignment quality. The two gates
+ * below must be strict enough that a "confirmed" sprint rarely misses by
+ * more than the ball's own width; otherwise leave the car on the normal
+ * APPROACH -> ALIGN -> PUSH path. */
+#define PUSH_FAR_SPRINT_ENABLE             1   /* 0 = disable, keep original flow only */
+#define PUSH_FAR_SPRINT_MAX_RADIUS_PX      5   /* ball must still be small (far) */
+#define PUSH_FAR_SPRINT_MAX_CY_PX         35   /* ball must be in the far half */
+#define PUSH_FAR_SPRINT_POCKET_ALIGN_PX    6   /* pocket heading error deadband */
+#define PUSH_FAR_SPRINT_BALL_POCKET_PX     6   /* ball-to-pocket lateral error gate */
+#define PUSH_FAR_SPRINT_FORWARD          200   /* charge speed (below HARD_PUSH 300) */
+/* Distance estimate: the camera looks slightly down, so logical cy maps
+ * roughly linearly to ground distance in the far band. Measured on the
+ * 120x80 push grid: cy=20 -> ~700 encoder counts to contact, cy=35 -> ~300.
+ * The formula below is COUNTS = BASE + (CY_REF - cy) * SCALE. Tune on the
+ * real table: if the car stops short, raise BASE; if it overruns, lower it. */
+#define PUSH_FAR_SPRINT_BASE_COUNTS      320
+#define PUSH_FAR_SPRINT_CY_REF_PX         35
+#define PUSH_FAR_SPRINT_CY_SCALE          12
+#define PUSH_FAR_SPRINT_MIN_COUNTS       200   /* never sprint less than this */
+#define PUSH_FAR_SPRINT_MAX_COUNTS      1200   /* safety cap on the charge */
+#define PUSH_FAR_SPRINT_STALL_MS         300   /* same stall window as PUSH */
+
+/* Alignment: rotate so the pocket (or its fallback bearing) is centered, and
+ * strafe so the ball is centered; small concurrent gains, deadband + confirm
+ * window. Gains are per logical pixel of error on the 120x80 grid. */
+#define PUSH_APPROACH_HEADING_TURN      70   /* far-away heading correction only */
+#define PUSH_APPROACH_HEADING_DEADBAND  10
+#define PUSH_APPROACH_HEADING_MAX       80
+#define PUSH_ALIGN_TURN_KP              3   /* legacy; ALIGN no longer rotates near ball */
+#define PUSH_ALIGN_TURN_MAX            80
+#define PUSH_ALIGN_TURN_MIN_PWM         60
+#define PUSH_ALIGN_STRAFE_KP            2   /* direct PWM per px of ball.x err */
+#define PUSH_ALIGN_STRAFE_MAX           45
+#define PUSH_ALIGN_STRAFE_MIN_PWM       35
+#define PUSH_ALIGN_DEADBAND_PX          8
+#define PUSH_ALIGN_SAFE_RADIUS_PX        8   /* above this, never strafe: back off first */
+#define PUSH_ALIGN_CONFIRM_MS          300
+
+#define PUSH_BACKOFF_SPEED             130   /* reverse away from a close ball */
+#define PUSH_BACKOFF_COUNTS            220
+#define PUSH_BACKOFF_MAX_CYCLES          4   /* ALIGN<->BACKOFF cycles -> fault */
+
+#define PUSH_PUSH_FORWARD              140
+#define PUSH_HARD_FORWARD              300   /* final straight impact remains strong */
+#define PUSH_HARD_PUSH_MS              650   /* shorter strong impact: enough to eject, less overshoot */
+#define PUSH_HARD_PUSH_COUNTS          1400  /* documentation / tuning reference */
+#define PUSH_EGRESS_SPEED              120   /* slower retreat to preserve the search area */
+#define PUSH_PUSH_TURN_KP               6   /* in-push heading-hold gain */
+#define PUSH_PUSH_TURN_MAX              90
+#define PUSH_PUSH_DEADBAND_PX           3
+#define PUSH_PUSH_HYSTERESIS_PX         1   /* turn-sign latch until |err| < this */
+#define PUSH_PUSH_MAX_COUNTS          3000   /* over-push guard (car->far edge) */
+#define PUSH_PUSH_STALL_MS             300   /* wedged ball = a MISS, not a fault */
+
+#define PUSH_POCKET_HIT_MARGIN_PX        4   /* bbox shrink/enlarge for success */
+#define PUSH_BALL_NEAR_POCKET_X_PX     12   /* boundary-entry corridor */
+#define PUSH_BALL_NEAR_POCKET_Y_PX     10   /* boundary-entry corridor */
+#define PUSH_POCKET_CONFIRM_FRAMES       3   /* distinct frames inside pocket */
+#define PUSH_BALL_DRIFT_MAX_PX          16   /* |ball.x - pocket.x| above = missed */
+#define PUSH_BALL_LOST_FRAMES            6   /* ball lost outside pocket = missed */
+
+#define PUSH_BACKOUT_SPEED             120   /* reverse after a missed push */
+#define PUSH_BACKOUT_COUNTS            260
+#define PUSH_EGRESS_REVERSE_COUNTS     1000   /* clear the table edge after a success - increased for more visible retreat */
+
+/* Post-egress motion after first ball (red) is pocketed: turn right then move forward
+ * to get into a better position to find the second ball (blue). */
+#define PUSH_POST_EGRESS_TURN_DEG      120    /* turn angle in degrees after egress */
+#define PUSH_POST_EGRESS_TURN_SPEED   200    /* rotation PWM, matches LINE_CORNER_ROTATE_TURN */
+#define PUSH_POST_EGRESS_FORWARD_COUNTS 1000 /* forward distance after egress turn (encoder counts) */
+#define PUSH_POST_EGRESS_FORWARD_SPEED 80    /* forward speed after egress turn */
+
+#define BALL_TASK_RETRY_MAX              3   /* pushes per ball before fault */
+#define BALL_TASK_TIMEOUT_MS         180000   /* whole task, both balls */
+#define BALL_VISION_FRESH_MAX_MS       500   /* vision age still "current" in main */
 
 /* HC-SR04 ultrasonic ranger. ECHO is a 5 V signal: use a divider/level shifter. */
 #define ULTRASONIC_TRIG_GPIO         14
@@ -372,7 +527,7 @@
 #define DRIVE_APPROACH_STARTUP_PWM         180
 #define DRIVE_APPROACH_MIN_ACTIVE_PWM      100
 #define DRIVE_FORWARD_MIN_ACTIVE_PWM       180
-#define DRIVE_LATERAL_MAX_PWM              700
+#define DRIVE_LATERAL_MAX_PWM              500
 #define DRIVE_SPEED_KP_NUM                   1
 #define DRIVE_SPEED_KP_DEN                   2
 #define DRIVE_SPEED_KI_NUM                   1
