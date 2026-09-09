@@ -1,0 +1,156 @@
+# ESP32-S3 三轮全向车巡线避障工程
+
+该工程使用 ESP32-S3、USB UVC 摄像头（双轴 MG90S 舵机云台）、D24A 三电机驱动、编码器、
+HC-SR04 测距和一次性横移避障。正常巡线与避障后的回线均使用摄像头
+画面采样出的伪红外通道掩码（4 个固定像素块，等效红外板输出）；
+任务 2 运行时红外板应断电。
+
+## 使用前配置
+
+摄像头请求 480x320 MJPEG，并以 1/8 比例解码成约 60x40 的 RGB888
+工作图（横向仍是 480 像素、四通道清晰度与几何不变，仅缩短竖向像素以降低
+软件解码耗时，把识别帧率从约 8fps 提到接近 25fps）。当前摄像头安装方向需要
+同时水平、垂直镜像，配置为：
+
+```c
+#define CAMERA_FLIP_HORIZONTAL 1
+#define CAMERA_FLIP_VERTICAL   1
+```
+
+两项同时为 1 等效于旋转 180°。视觉算法和 Wi-Fi 主页面共用这组配置；
+端口 81 的裸 MJPEG 流仍保持摄像头原始方向。
+
+电机 GPIO、GPIO4 STBY 和三组 EA/EB 沿用 `wheel-test` 的实际配置：
+左轮 Motor D、右轮 Motor A、后轮 Motor B。GPIO4 会在电机运行前拉高，
+停车后拉低。
+
+HC-SR04 使用 GPIO14 作为 TRIG、GPIO13 作为 ECHO。HC-SR04 的 ECHO 是
+5 V 信号，接入 ESP32-S3 前必须使用电阻分压或电平转换。
+
+驱动接口使用 `forward/lateral/turn` 三个分量。正 `lateral` 表示向左横移，
+横移轮速比例为 `[左, 右, 后] = [-lateral/2, lateral/2, -lateral]`；
+巡线仍保持 `[forward+turn, forward-turn, 0]`。首次运行必须架空车轮，分别
+确认正 `forward` 直行、正 `lateral` 左移、正 `turn` 右转。单个轮子方向
+错误时修改对应的 `MOTOR_*_REVERSED`，不要在控制状态机中修改符号。
+
+横移阶段会自动启用三个独立的编码器 PI 速度环，以 50 ms 窗口测量各轮
+实际转速，并通过最低启动 PWM 补偿静摩擦。首次测速后，当前左移和右移
+运行 PWM 下限分别为 180 和 160。
+巡线和拐角仍使用原有开环输出。向前越障为防止低 PWM 堵转，会对左右轮
+分别启用编码器速度闭环。串口日志的 `speed_loop` 会
+显示三轮目标/实测 counts/s，用于检查某个轮子是否跟不上目标。
+当前避障横移指令为 120，对应目标约为 `[-120,+120,-240] counts/s`，用于
+减小停止时因惯性造成的横向偏移。
+
+## 控制行为
+
+- 正常巡线时持续读取前向距离；进入 10 cm 范围后减速，连续两次测得
+  距离不大于 5 cm 后停车并启动一次性避障。10 cm 内的低速接近使用左右
+  轮编码器防堵转闭环：保持低速目标，但车轮停住时会自动提高对应 PWM。
+- 避障顺序为：制动、短距离后退、左横移至前方连续确认无障碍、编码器
+  定距前进、向右横移，直到视觉连续识别到黑线并对中，然后恢复巡线。
+- 左移连续确认障碍物边缘消失后仍保持横移 250 ms，留出板边安全余量；
+  前进完成要求左右轮分别达到约 700 counts，单轮空转不会提前进入右移。
+- 避障只执行一次。测距数据超时、任一运动阶段超时、编码器堵转或横移
+  超过安全上限都会进入 `FAULT_STOP` 锁定停车。
+- `AVOID_FORWARD_TARGET_COUNTS`、横移计数和各阶段速度是低速初值，必须
+  按实际障碍长度、车体尺寸、轮径及地面摩擦进行标定。
+
+- 视觉部分在画面 70% 高度处固定采样 4 个 6×6 像素块，位置分别对应
+  四个红外通道（左→右：通道4→通道1，即 x=W/8、3W/8、5W/8、7W/8）。
+  块内低于该行自适应阈值的暗像素达到设定数量即视为压到黑线，输出与
+  真红外板一致的 4 位掩码。Wi-Fi 主页面会把这 4 个采样块画成绿框。
+- 掩码位序与红外板一致：bit0=通道1=车右，bit3=通道4=车左。黑线落在
+  两通道之间的空隙时会输出全白（丢线），控制器据此进入低速搜索。
+- 采样行出现占宽 ≥70% 的连续暗段记为终点，连续 3 帧确认后输出全黑
+  0x0F，触发红外状态机的全黑停车。
+- 上电初始化成功后等待 3 秒才开始运动。
+- 摄像头未连接、画面超过 1.5 秒未更新、持续丢线或避障阶段异常都会锁定
+  停车，需要复位开发板才能再次启动。
+
+编码器使用 ESP32-S3 PCNT 做三路 x4 正交计数。串口日志中的 `enc` 是累计
+计数；日志中如果前进计数方向与注释不一致，应检查接线和
+`ENCODER_*_REVERSED`。视觉巡线本身为开环电机输出，编码器闭环用于低速
+接近、横移和向前越障阶段。
+
+停车状态为锁定状态，需要复位开发板才能再次启动。
+
+## 摄像头云台（MG90S 双轴舵机）
+
+摄像头由两个 MG90S 舵机承载：一个水平（pan）、一个竖直（tilt）。固件目前
+只把云台固定到一个角度——上电初始化时转到各自的 `CENTER_DEG` 并持续保持，
+运行中不会随巡线动态转动（未做视觉追踪）。
+
+角度用舵机轴角度（0~180）表示，当前装配约定：
+
+- 水平 pan：0° = 摄像头朝右（增大方向朝左，具体以实测为准）。
+- 竖直 tilt：0° = 摄像头朝正上，角度增大向下俯；向下约到 120° 时被车体
+  结构挡住无法继续，这是机械硬限位。
+
+舵机是开环器件：MG90S 只有电源/地/信号三根线，信号只进不出，不会回传
+实际角度。固件无法知道上电前云台停在几度，只能命令目标角度、由舵机自己
+转到位并保持。因此固定朝向依赖装配时把舵盘对准，再用 `CENTER_DEG` 微调。
+
+配置集中在 `main/board_config.h`：
+
+```c
+#define CAMERA_PAN_SERVO_GPIO        45   /* 水平舵机信号脚 */
+#define CAMERA_TILT_SERVO_GPIO       21   /* 竖直舵机信号脚 */
+#define SERVO_PWM_FREQ_HZ            50
+#define SERVO_PULSE_MIN_US         1000   /* 轴   0° */
+#define SERVO_PULSE_MAX_US         2000   /* 轴 180° */
+
+#define CAMERA_PAN_SERVO_MIN_DEG      0   /* 水平：限位与固定角 */
+#define CAMERA_PAN_SERVO_MAX_DEG    180
+#define CAMERA_PAN_SERVO_CENTER_DEG 120
+
+#define CAMERA_TILT_SERVO_MIN_DEG    30   /* 竖直：限位与固定角 */
+#define CAMERA_TILT_SERVO_MAX_DEG   150
+#define CAMERA_TILT_SERVO_CENTER_DEG 100
+```
+
+- 改固定朝向：只改两个 `CENTER_DEG`，重新编译烧录即可。
+- 软限位：每条角度指令都会被钳位到对应轴的 `MIN_DEG`~`MAX_DEG`，舵机不会
+  被命令去撞机械挡块（避免堵转发热）。竖直向下被挡的角度就是
+  `CAMERA_TILT_SERVO_MAX_DEG` 应填的真实值，请按实测设置。
+- 接线与供电：舵机需独立且电流足够的 5 V（MG90S 堵转可达约 1 A），电源地
+  必须与开发板共地；信号线分别接上表两个 GPIO（GPIO45 是 strapping 引脚，
+  作舵机输出上电后可用，若遇启动异常可优先换到非 strapping 脚）。
+- 云台使用独立 LEDC 定时器/通道（TIMER_1、CHANNEL_3/4），与电机的 TIMER_0、
+  CHANNEL_0~2 不冲突。两个 GPIO 都设为 -1 时云台禁用、摄像头固定不动，
+  `camera_gimbal_init()` 只打印一条 warning。
+- 上电自检：临时把某个 `CENTER_DEG` 改成明显不同的角度并重新烧录，上电瞬间
+  对应舵机应转过去；不动则检查供电、共地和信号线序。
+
+## 构建
+
+在 ESP-IDF 5.4.x PowerShell 环境中执行：
+
+```powershell
+cd D:\idf_intelligent_car_txgayay\vison_lnf_avoid
+idf.py set-target esp32s3
+idf.py build
+idf.py -p COM端口 flash monitor
+```
+
+先架空车轮确认方向，再在安全低速场地测试。伪红外采样参数见
+`main/board_config.h` 的 `PSEUDO_IR_*`（采样行、块大小、黑色阈值、
+终点宽度与确认帧数）；巡线/避障的 PWM 参数沿用原红外工程的同名宏。
+
+## 推球入洞（循迹终点后的任务）
+
+循迹压终点条停车后，任务自动切换：摄像头画面是 480×320，推球阶段解码时直接按 1/4
+缩小成 120×80 的"工作图"（算法只看这张小图，跑得快；红/蓝球和暗色底袋都在小图上
+识别），先把红球推入左侧底袋、再把蓝球
+推入右侧底袋（`BALL_TASK_*` 可改）。核心思想是**让车—球—袋三点共线再直线推**
+（旋转瞄准袋心、横移把球对准中线、球心与袋心都居中 ⇔ 共线），推失自动退避重试，
+双球完成或超时/重试耗尽锁停。原理、标定清单与台上调参步骤见
+[POCKET_PUSH.md](POCKET_PUSH.md)；新模块 `main/ball_vision.*`（球/袋识别）、
+`main/ball_push.*`（推球状态机）；相关宏集中在 `main/board_config.h` 尾部的
+`BALL_* / POCKET_* / PUSH_* / BALL_TASK_*` 块。
+
+## V7 ball-only control changes
+- Power-on first drives straight for a short fixed interval, then enters ball acquisition.
+- Ball acquisition prioritizes lateral centering first; once centered, the car drives straight.
+- Ball strafing uses `BALL_DRIVE_LATERAL` -> `drive_set_motion_feedback()`, the same drive path used by obstacle-avoidance strafing.
+- Boundary alignment does not blindly chase a virtual pocket when the real black boundary is out of frame.
