@@ -476,8 +476,8 @@
 #define PUSH_SCAN_FIRST_COUNTS    (4 * PUSH_SCAN_30_DEG_COUNTS)
 #define PUSH_SCAN_SECOND_COUNTS   (8 * PUSH_SCAN_30_DEG_COUNTS)
 #define PUSH_SCAN_MAX_LEGS              4
-#define PUSH_SCAN_TURN                 230   /* rotation PWM, matches LINE_SEARCH_TURN calibration */
-#define PUSH_SCAN_FINE_TURN            180   /* rotation PWM, matches LINE_SEARCH_FINE_TURN calibration */
+#define PUSH_SCAN_TURN                 150   /* slower scan rotation to give vision more time to spot balls */
+#define PUSH_SCAN_FINE_TURN            120   /* slower fine scan rotation */
 #define PUSH_SCAN_STALL_MS             400
 #define PUSH_SCAN_STALL_COUNTS          2
 
