@@ -28,7 +28,6 @@ typedef struct {
     int error;
     int forward;
     int turn;
-    bool state_changed;
 } line_follow_result_t;
 
 typedef struct {

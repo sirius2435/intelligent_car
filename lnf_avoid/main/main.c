@@ -138,7 +138,6 @@ void app_main(void)
             .error = 0,
             .forward = MOTOR_SYMMETRY_FORWARD,
             .turn = MOTOR_SYMMETRY_TURN,
-            .state_changed = false,
         };
         obstacle_avoidance_result_t avoid_control = {
             .state = AVOIDANCE_ARMED,

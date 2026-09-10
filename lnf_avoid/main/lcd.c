@@ -194,16 +194,6 @@ static esp_err_t lcd_set_window(int x0, int y0, int x1, int y1)
     return lcd_write_cmd(LCD_CMD_RAMWR);
 }
 
-bool lcd_is_ready(void)
-{
-    return s_ready;
-}
-
-int lcd_width(void)
-{
-    return s_width;
-}
-
 int lcd_height(void)
 {
     return s_height;

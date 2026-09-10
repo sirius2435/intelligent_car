@@ -1,7 +1,5 @@
 #include "obstacle_avoidance.h"
 
-#include <limits.h>
-
 #include "board_config.h"
 #include "infrared_sensor.h"
 
@@ -77,15 +75,13 @@ static bool motion_failed(obstacle_avoidance_controller_t *controller,
 }
 
 static obstacle_avoidance_result_t result_for(
-    const obstacle_avoidance_controller_t *controller,
-    obstacle_avoidance_state_t old_state)
+    const obstacle_avoidance_controller_t *controller)
 {
     obstacle_avoidance_result_t result = {
         .state = controller->state,
         .tracking_forward_limit = 1000,
         .active = controller->state != AVOIDANCE_ARMED &&
                   controller->state != AVOIDANCE_COMPLETE,
-        .state_changed = old_state != controller->state,
     };
     switch (controller->state) {
     case AVOIDANCE_STRAFE_LEFT:
@@ -104,11 +100,10 @@ static obstacle_avoidance_result_t result_for(
 }
 
 static obstacle_avoidance_result_t fault_result(
-    obstacle_avoidance_controller_t *controller,
-    obstacle_avoidance_state_t old_state)
+    obstacle_avoidance_controller_t *controller)
 {
     controller->state = AVOIDANCE_FAULT_STOP;
-    obstacle_avoidance_result_t result = result_for(controller, old_state);
+    obstacle_avoidance_result_t result = result_for(controller);
     result.active = true;
     result.forward = 0;
     result.lateral = 0;
@@ -144,12 +139,11 @@ obstacle_avoidance_result_t obstacle_avoidance_update(
         return invalid;
     }
 
-    const obstacle_avoidance_state_t old_state = controller->state;
     if (controller->state == AVOIDANCE_COMPLETE) {
-        return result_for(controller, old_state);
+        return result_for(controller);
     }
     if (controller->state == AVOIDANCE_FAULT_STOP) {
-        return fault_result(controller, old_state);
+        return fault_result(controller);
     }
 
     const bool new_ultrasonic =
@@ -164,7 +158,7 @@ obstacle_avoidance_result_t obstacle_avoidance_update(
     }
 
     if (controller->state == AVOIDANCE_ARMED) {
-        obstacle_avoidance_result_t result = result_for(controller, old_state);
+        obstacle_avoidance_result_t result = result_for(controller);
         if (ultrasonic->status == ULTRASONIC_READING_VALID &&
             ultrasonic->distance_mm <= AVOID_SLOW_DISTANCE_MM) {
             result.tracking_forward_limit = AVOID_SLOW_FORWARD;
@@ -181,7 +175,7 @@ obstacle_avoidance_result_t obstacle_avoidance_update(
         if (controller->trigger_confirm_count >= AVOID_TRIGGER_CONFIRM_SAMPLES) {
             controller->state = AVOIDANCE_BRAKE;
             controller->stage_ms = 0;
-            result = result_for(controller, old_state);
+            result = result_for(controller);
         }
         return result;
     }
@@ -192,7 +186,7 @@ obstacle_avoidance_result_t obstacle_avoidance_update(
             begin_motion_stage(controller, AVOIDANCE_STRAFE_LEFT,
                                left_count, right_count, rear_count);
         }
-        return result_for(controller, old_state);
+        return result_for(controller);
     }
 
     if (controller->state == AVOIDANCE_STRAFE_LEFT) {
@@ -221,13 +215,13 @@ obstacle_avoidance_result_t obstacle_avoidance_update(
             controller->outbound_lateral_counts = controller->progress_counts;
             begin_motion_stage(controller, AVOIDANCE_FORWARD_PASS,
                                left_count, right_count, rear_count);
-            return result_for(controller, old_state);
+            return result_for(controller);
         }
         if (controller->sensor_silence_ms >= AVOID_SENSOR_STALE_MS ||
             motion_failed(controller, elapsed_ms, AVOID_LEFT_MAX_COUNTS)) {
-            return fault_result(controller, old_state);
+            return fault_result(controller);
         }
-        return result_for(controller, old_state);
+        return result_for(controller);
     }
 
     if (controller->state == AVOIDANCE_FORWARD_PASS) {
@@ -242,13 +236,13 @@ obstacle_avoidance_result_t obstacle_avoidance_update(
             right_progress >= target_per_wheel) {
             begin_motion_stage(controller, AVOIDANCE_STRAFE_RIGHT_FIND_LINE,
                                left_count, right_count, rear_count);
-            return result_for(controller, old_state);
+            return result_for(controller);
         }
         if (motion_failed(controller, elapsed_ms,
                           AVOID_FORWARD_TARGET_COUNTS + AVOID_RIGHT_EXTRA_COUNTS)) {
-            return fault_result(controller, old_state);
+            return fault_result(controller);
         }
-        return result_for(controller, old_state);
+        return result_for(controller);
     }
 
     controller->progress_counts =
@@ -263,16 +257,16 @@ obstacle_avoidance_result_t obstacle_avoidance_update(
     }
     if (controller->centered_ms >= AVOID_LINE_CENTERED_MS) {
         controller->state = AVOIDANCE_COMPLETE;
-        obstacle_avoidance_result_t result = result_for(controller, old_state);
+        obstacle_avoidance_result_t result = result_for(controller);
         result.just_completed = true;
         return result;
     }
     if (motion_failed(controller, elapsed_ms,
                       controller->outbound_lateral_counts +
                       AVOID_RIGHT_EXTRA_COUNTS)) {
-        return fault_result(controller, old_state);
+        return fault_result(controller);
     }
-    return result_for(controller, old_state);
+    return result_for(controller);
 }
 
 const char *obstacle_avoidance_state_name(obstacle_avoidance_state_t state)

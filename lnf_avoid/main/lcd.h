@@ -20,16 +20,12 @@ extern "C" {
 #define LCD_COLOR_GRAY     LCD_COLOR(128, 128, 128)
 #define LCD_COLOR_RED      LCD_COLOR(255, 0, 0)
 #define LCD_COLOR_GREEN    LCD_COLOR(0, 255, 0)
-#define LCD_COLOR_BLUE     LCD_COLOR(0, 0, 255)
 #define LCD_COLOR_YELLOW   LCD_COLOR(255, 255, 0)
 #define LCD_COLOR_CYAN     LCD_COLOR(0, 255, 255)
-#define LCD_COLOR_ORANGE   LCD_COLOR(255, 160, 0)
 
 /* Initialize the SPI bus and the LQ_TFT18SPI V3.3 panel. Safe to call once;
  * subsequent calls return ESP_OK without touching the hardware again. */
 esp_err_t lcd_init(void);
-bool lcd_is_ready(void);
-int lcd_width(void);
 int lcd_height(void);
 
 void lcd_fill_screen(uint16_t color);

@@ -47,7 +47,6 @@ typedef struct {
     bool active;
     bool slow_approach;
     bool just_completed;
-    bool state_changed;
 } obstacle_avoidance_result_t;
 
 void obstacle_avoidance_init(obstacle_avoidance_controller_t *controller);

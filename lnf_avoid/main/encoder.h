@@ -16,11 +16,8 @@ typedef enum {
 } encoder_wheel_t;
 
 esp_err_t encoder_init(void);
-bool encoder_is_enabled(void);
 esp_err_t encoder_get_count(encoder_wheel_t wheel, int *count);
 esp_err_t encoder_get_all(int *left_count, int *right_count, int *rear_count);
-esp_err_t encoder_clear(encoder_wheel_t wheel);
-esp_err_t encoder_clear_all(void);
 
 #ifdef __cplusplus
 }

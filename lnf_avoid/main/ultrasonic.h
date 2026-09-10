@@ -19,7 +19,6 @@ typedef struct {
     ultrasonic_reading_status_t status;
     uint32_t distance_mm;
     uint32_t sequence;
-    int64_t timestamp_us;
 } ultrasonic_reading_t;
 
 esp_err_t ultrasonic_init(void);

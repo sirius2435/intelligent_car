@@ -17,7 +17,6 @@ extern "C" {
 
 typedef struct {
     uint8_t black_mask;
-    bool changed;
 } infrared_sensor_state_t;
 
 esp_err_t infrared_sensor_init(void);
