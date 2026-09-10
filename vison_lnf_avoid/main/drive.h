@@ -3,15 +3,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#if defined(__has_include)
-#  if __has_include("esp_err.h")
-#    include "esp_err.h"
-#  else
-typedef int esp_err_t;
-#  endif
-#else
-#  include "esp_err.h"
-#endif
+/* Host tests compile this with -Itests/stubs, which supplies a minimal
+ * esp_err.h - the same arrangement every other header here relies on. */
+#include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,7 +24,14 @@ typedef struct {
     drive_wheel_command_t pwm;
 } drive_feedback_status_t;
 
+/* The trailing `applied` out-parameter of every setter below is test-only
+ * instrumentation: it reports the per-wheel command/PWM the mixer and the PI
+ * loop actually produced, which is otherwise unobservable from outside
+ * drive.c. main.c passes NULL. tests/drive_mix_test.c depends on it, so do not
+ * delete it as "dead code" without deleting that test's assertions first. */
 esp_err_t drive_init(void);
+/* Also exported for tests/drive_mix_test.c; the firmware only calls it through
+ * the setters below. */
 void drive_mix_motion(int forward,
                       int lateral,
                       int turn,
@@ -61,6 +62,12 @@ esp_err_t drive_set_approach_feedback(int forward,
                                       int left_count,
                                       int right_count,
                                       drive_wheel_command_t *applied);
+/* Test-only instrumentation: the firmware never reads this. It exists so
+ * tests/drive_mix_test.c can pin the wheel PI loop's internals (target vs.
+ * measured cps and the resulting PWM, including the anti-windup clamp), which
+ * are otherwise unobservable from outside drive.c. Cost is a few dozen int
+ * stores per control tick. Do not delete it as "dead code" without first
+ * deleting that test's feedback assertions. */
 void drive_get_feedback_status(drive_feedback_status_t *status);
 esp_err_t drive_stop(void);
 

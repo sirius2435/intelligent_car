@@ -255,18 +255,13 @@ static unsigned isqrt_u32(unsigned value)
     return root;
 }
 
-static ball_blob_t blob_from_component(uint8_t class_id,
-                                       const ball_vision_component_t *c)
+static ball_blob_t blob_from_component(const ball_vision_component_t *c)
 {
     return (ball_blob_t) {
         .present = true,
-        .color = class_id == BALL_VISION_CLASS_RED ? BALL_COLOR_RED
-                                                   : BALL_COLOR_BLUE,
         .cx = c->sum_x / c->area,
         .cy = c->sum_y / c->area,
         .radius = (int)isqrt_u32((unsigned)c->area * 100U / 314U),
-        .area = (unsigned)c->area,
-        .x0 = c->x0, .y0 = c->y0, .x1 = c->x1, .y1 = c->y1,
     };
 }
 
@@ -394,7 +389,7 @@ static bool pick_best_ball(const ball_vision_frame_t *frame,
         out->present = false;
         return false;
     }
-    *out = blob_from_component(class_id, &components[best]);
+    *out = blob_from_component(&components[best]);
     return true;
 }
 
@@ -465,8 +460,9 @@ static void add_edge_zone_pocket(const ball_vision_frame_t *frame,
         .x0 = min_x, .y0 = min_y, .x1 = max_x, .y1 = max_y,
     };
 
-    /* Replace an existing slot for the same side only when the edge-zone
-     * fallback is stronger.  Slots are always kept sorted left -> right. */
+    /* Insert the candidate into the local two-slot array, kept sorted
+     * left -> right. pick_pockets() swaps this array in wholesale when it
+     * yields more pockets than the connected-component pass did. */
     unsigned pos = *count;
     if (pos < 2U) {
         while (pos > 0U && slots[pos - 1U].cx > candidate.cx) {
@@ -571,43 +567,13 @@ esp_err_t ball_vision_analyze(const uint8_t *rgb,
         .stride = stride_bytes,
     };
 
-    /* Pass 1: TABLETOP luminance = the dominant peak of the luminance
-     * histogram, not the frame mean. The mean is dragged down whenever the
-     * black track or its bends sweep through the view. Both ball tests are
-     * chromatic now, so this value is a DIAGNOSTIC for the on-site tuning
-     * page (/status "t") rather than a gate; the histogram peak still says
-     * "this is the board surface" whatever else is in frame. */
-    uint16_t hist[256];
-    memset(hist, 0, sizeof(hist));
-    for (unsigned y = 0; y < height; ++y) {
-        const uint8_t *row = rgb + (size_t)y * stride_bytes;
-        for (unsigned x = 0; x < width; ++x) {
-            ++hist[luma_of(row + (size_t)x * 3U)];
-        }
-    }
-    unsigned peak_bin = 0;
-    for (unsigned i = 1; i < 256; ++i) {
-        if (hist[i] > hist[peak_bin]) {
-            peak_bin = i;
-        }
-    }
-    uint64_t weight_sum = 0;
-    uint64_t luma_weighted = 0;
-    const int lo = (int)peak_bin > 3 ? (int)peak_bin - 3 : 0;
-    const int hi = (int)peak_bin < 252 ? (int)peak_bin + 3 : 255;
-    for (int i = lo; i <= hi; ++i) {
-        weight_sum += hist[i];
-        luma_weighted += (uint64_t)hist[i] * (uint64_t)i;
-    }
-    const int table_luma = weight_sum == 0 ? 128 :
-        (int)(luma_weighted / weight_sum);
-
-    /* Pass 2: per-pixel classification in LOGICAL order. The dark (pocket)
-     * test only runs on the far-table band (logical y < 55% height), which
-     * keeps the black track / finish bar in the lower half out of the test.
-     * Red and blue are tested with priority so a far ball - including the
-     * shaded, dark side of the blue one - cannot be swallowed by the pocket
-     * test. */
+    /* Per-pixel classification in LOGICAL order. The dark (pocket) test only
+     * runs on the far-table band (logical y < POCKET_REGION_MAX_Y_PERCENT of
+     * the height), which keeps the black track / finish bar in the lower half
+     * out of the test. Red and blue are tested with priority so a far ball -
+     * including the shaded, dark side of the blue one - cannot be swallowed
+     * by the pocket test. The three *_px counters are free by-products of
+     * this single pass. */
     const unsigned pocket_band = height * POCKET_REGION_MAX_Y_PERCENT / 100U;
     unsigned red_px = 0;
     unsigned blue_px = 0;
@@ -649,17 +615,9 @@ esp_err_t ball_vision_analyze(const uint8_t *rgb,
             s_class_map[(size_t)ly * width + lx] = class_id;
         }
     }
-    out->table_luma = (unsigned)table_luma;
     out->red_px = red_px;
     out->blue_px = blue_px;
     out->pocket_px = pocket_px;
-    for (unsigned i = 0; i < 16; ++i) {
-        unsigned bin = 0;
-        for (unsigned k = 0; k < 16; ++k) {
-            bin += hist[i * 16 + k];
-        }
-        out->luma_hist[i] = bin;
-    }
 
     out->width = width;
     out->height = height;
@@ -686,13 +644,4 @@ const ball_blob_t *ball_vision_find_ball(const ball_vision_result_t *result,
         return NULL;
     }
     return result->balls[color].present ? &result->balls[color] : NULL;
-}
-
-const pocket_blob_t *ball_vision_find_pocket(const ball_vision_result_t *result,
-                                             unsigned side)
-{
-    if (result == NULL || side >= 2) {
-        return NULL;
-    }
-    return result->pockets[side].visible ? &result->pockets[side] : NULL;
 }

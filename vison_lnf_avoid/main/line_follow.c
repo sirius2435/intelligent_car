@@ -101,22 +101,19 @@ static void reset_search(line_follow_controller_t *controller)
     controller->search_stall_ms = 0;
 }
 
-static line_follow_result_t stopped_result(bool changed)
+static line_follow_result_t stopped_result(void)
 {
     return (line_follow_result_t) {
         .state = LINE_FOLLOW_STOPPED,
-        .error = 0,
         .forward = 0,
         .turn = 0,
-        .state_changed = changed,
     };
 }
 
 static line_follow_result_t controlled_result(line_follow_controller_t *controller,
                                               line_follow_state_t state,
                                               int error,
-                                              int forward_limit,
-                                              line_follow_state_t old_state)
+                                              int forward_limit)
 {
     reset_search(controller);
     const int derivative = controller->last_cycle_tracking ?
@@ -141,10 +138,8 @@ static line_follow_result_t controlled_result(line_follow_controller_t *controll
 
     return (line_follow_result_t) {
         .state = state,
-        .error = error,
         .forward = forward,
         .turn = turn,
-        .state_changed = old_state != state,
     };
 }
 
@@ -153,6 +148,9 @@ static line_follow_result_t search_result(line_follow_controller_t *controller,
                                           int left_count,
                                           int right_count)
 {
+    /* Captured before any mutation below: the LOST_SEARCH entry test needs to
+     * know whether the controller was already searching on the previous tick,
+     * which decides between (re)starting leg 0 and continuing the current leg. */
     const line_follow_state_t old_state = controller->state;
     controller->last_cycle_tracking = false;
     reset_corner_detection(controller, true);
@@ -162,17 +160,15 @@ static line_follow_result_t search_result(line_follow_controller_t *controller,
         reset_search(controller);
         return (line_follow_result_t) {
             .state = controller->state,
-            .error = 0,
             .forward = 0,
             .turn = 0,
-            .state_changed = old_state != controller->state,
         };
     }
     controller->lost_ms = add_saturated(controller->lost_ms, elapsed_ms);
     if (controller->lost_ms >= LINE_LOST_STOP_MS) {
         controller->state = LINE_FOLLOW_STOPPED;
         reset_search(controller);
-        return stopped_result(old_state != LINE_FOLLOW_STOPPED);
+        return stopped_result();
     }
 
     controller->state = LINE_FOLLOW_LOST_SEARCH;
@@ -197,16 +193,14 @@ static line_follow_result_t search_result(line_follow_controller_t *controller,
         if (controller->search_settle_ms < LINE_SEARCH_SETTLE_MS) {
             return (line_follow_result_t) {
                 .state = controller->state,
-                .error = controller->last_error,
                 .forward = 0,
                 .turn = 0,
-                .state_changed = false,
             };
         }
         if (controller->search_leg + 1U >= LINE_SEARCH_MAX_LEGS) {
             controller->state = LINE_FOLLOW_STOPPED;
             reset_search(controller);
-            return stopped_result(true);
+            return stopped_result();
         }
         ++controller->search_leg;
         controller->search_direction = -controller->search_direction;
@@ -233,10 +227,8 @@ static line_follow_result_t search_result(line_follow_controller_t *controller,
             controller->search_stall_ms = 0;
             return (line_follow_result_t) {
                 .state = controller->state,
-                .error = controller->last_error,
                 .forward = 0,
                 .turn = 0,
-                .state_changed = false,
             };
         }
 
@@ -250,7 +242,7 @@ static line_follow_result_t search_result(line_follow_controller_t *controller,
             if (controller->search_stall_ms >= LINE_SEARCH_STALL_MS) {
                 controller->state = LINE_FOLLOW_STOPPED;
                 reset_search(controller);
-                return stopped_result(true);
+                return stopped_result();
             }
         }
     }
@@ -262,22 +254,17 @@ static line_follow_result_t search_result(line_follow_controller_t *controller,
         LINE_SEARCH_FINE_TURN : LINE_SEARCH_TURN;
     return (line_follow_result_t) {
         .state = controller->state,
-        .error = controller->last_error,
         .forward = LINE_SEARCH_FORWARD,
         .turn = controller->search_direction * turn_magnitude,
-        .state_changed = old_state != controller->state,
     };
 }
 
-static line_follow_result_t rotate_result(line_follow_controller_t *controller,
-                                          line_follow_state_t old_state)
+static line_follow_result_t rotate_result(line_follow_controller_t *controller)
 {
     return (line_follow_result_t) {
         .state = LINE_FOLLOW_CORNER_ROTATE,
-        .error = controller->has_last_error ? controller->last_error : 0,
         .forward = LINE_CORNER_ROTATE_FORWARD,
         .turn = controller->corner_direction * LINE_CORNER_ROTATE_TURN,
-        .state_changed = old_state != LINE_FOLLOW_CORNER_ROTATE,
     };
 }
 
@@ -287,7 +274,6 @@ static line_follow_result_t update_corner_rotate(line_follow_controller_t *contr
                                                  int left_count,
                                                  int right_count)
 {
-    const line_follow_state_t old_state = controller->state;
     controller->corner_rotate_ms = add_saturated(controller->corner_rotate_ms, elapsed_ms);
     controller->lost_ms = add_saturated(controller->lost_ms, elapsed_ms);
     controller->last_cycle_tracking = false;
@@ -314,7 +300,7 @@ static line_follow_result_t update_corner_rotate(line_follow_controller_t *contr
             controller->last_direction = completed_direction;
             controller->last_cycle_tracking = false;
             return controlled_result(controller, LINE_FOLLOW_CORNER_EXIT, error,
-                                     LINE_MIN_FORWARD, old_state);
+                                     LINE_MIN_FORWARD);
         }
     } else {
         controller->corner_centered_ms = 0;
@@ -324,7 +310,7 @@ static line_follow_result_t update_corner_rotate(line_follow_controller_t *contr
         controller->last_direction = controller->corner_direction;
         return search_result(controller, 0, left_count, right_count);
     }
-    return rotate_result(controller, old_state);
+    return rotate_result(controller);
 }
 
 void line_follow_init(line_follow_controller_t *controller)
@@ -344,25 +330,22 @@ line_follow_result_t line_follow_update(line_follow_controller_t *controller,
                                         int right_count)
 {
     if (controller == NULL || controller->state == LINE_FOLLOW_STOPPED) {
-        return stopped_result(false);
+        return stopped_result();
     }
 
     black_mask &= IR_ALL_BLACK_MASK;
     if (black_mask == IR_ALL_BLACK_MASK) {
         controller->all_black_ms = add_saturated(controller->all_black_ms, elapsed_ms);
         if (controller->all_black_ms >= LINE_ALL_BLACK_STOP_MS) {
-            const bool changed = controller->state != LINE_FOLLOW_STOPPED;
             controller->state = LINE_FOLLOW_STOPPED;
             reset_search(controller);
-            return stopped_result(changed);
+            return stopped_result();
         }
         controller->last_cycle_tracking = false;
         return (line_follow_result_t) {
             .state = controller->state,
-            .error = controller->has_last_error ? controller->last_error : 0,
             .forward = 0,
             .turn = 0,
-            .state_changed = false,
         };
     }
     controller->all_black_ms = 0;
@@ -373,7 +356,6 @@ line_follow_result_t line_follow_update(line_follow_controller_t *controller,
     }
 
     if (controller->state == LINE_FOLLOW_CORNER_CANDIDATE && black_mask == 0U) {
-        const line_follow_state_t old_state = controller->state;
         if (add_saturated(controller->corner_candidate_ms, elapsed_ms) >
             LINE_CORNER_CONFIRM_WINDOW_MS) {
             controller->state = LINE_FOLLOW_TRACKING;
@@ -387,7 +369,7 @@ line_follow_result_t line_follow_update(line_follow_controller_t *controller,
         controller->invalid_ms = 0;
         controller->last_cycle_tracking = false;
         controller->corner_rearm_ready = false;
-        return rotate_result(controller, old_state);
+        return rotate_result(controller);
     }
 
     if (black_mask == 0U) {
@@ -395,7 +377,6 @@ line_follow_result_t line_follow_update(line_follow_controller_t *controller,
         return search_result(controller, elapsed_ms, left_count, right_count);
     }
 
-    const line_follow_state_t old_state = controller->state;
     if (!mask_is_contiguous(black_mask)) {
         if (controller->state == LINE_FOLLOW_LOST_SEARCH) {
             controller->invalid_ms =
@@ -418,10 +399,8 @@ line_follow_result_t line_follow_update(line_follow_controller_t *controller,
         const int held_error = controller->has_last_error ? controller->last_error : 0;
         return (line_follow_result_t) {
             .state = controller->state,
-            .error = held_error,
             .forward = controller->has_last_error ? LINE_MIN_FORWARD : 0,
             .turn = clamp_int(LINE_KP * held_error, -LINE_TURN_LIMIT, LINE_TURN_LIMIT),
-            .state_changed = old_state != controller->state,
         };
     }
 
@@ -438,7 +417,7 @@ line_follow_result_t line_follow_update(line_follow_controller_t *controller,
                 add_saturated(controller->corner_candidate_ms, elapsed_ms);
             if (controller->corner_candidate_ms <= LINE_CORNER_CONFIRM_WINDOW_MS) {
                 return controlled_result(controller, LINE_FOLLOW_CORNER_CANDIDATE,
-                                         error, LINE_CORNER_APPROACH_FORWARD, old_state);
+                                         error, LINE_CORNER_APPROACH_FORWARD);
             }
         }
         controller->state = LINE_FOLLOW_TRACKING;
@@ -453,7 +432,7 @@ line_follow_result_t line_follow_update(line_follow_controller_t *controller,
             next_state = LINE_FOLLOW_TRACKING;
         }
         return controlled_result(controller, next_state, error,
-                                 LINE_MIN_FORWARD, old_state);
+                                 LINE_MIN_FORWARD);
     }
 
     if (outer_dir != 0) {
@@ -471,7 +450,7 @@ line_follow_result_t line_follow_update(line_follow_controller_t *controller,
             if (controller->corner_arm_ms >= LINE_CORNER_ARM_MS) {
                 controller->corner_candidate_ms = 0;
                 return controlled_result(controller, LINE_FOLLOW_CORNER_CANDIDATE,
-                                         error, LINE_CORNER_APPROACH_FORWARD, old_state);
+                                         error, LINE_CORNER_APPROACH_FORWARD);
             }
         } else {
             controller->corner_arm_ms = 0;
@@ -493,7 +472,7 @@ line_follow_result_t line_follow_update(line_follow_controller_t *controller,
     }
 
     return controlled_result(controller, LINE_FOLLOW_TRACKING, error,
-                             LINE_BASE_FORWARD, old_state);
+                             LINE_BASE_FORWARD);
 }
 
 const char *line_follow_state_name(line_follow_state_t state)
@@ -513,20 +492,6 @@ const char *line_follow_state_name(line_follow_state_t state)
         return "LOST_SEARCH";
     case LINE_FOLLOW_STOPPED:
         return "STOPPED";
-    default:
-        return "UNKNOWN";
-    }
-}
-
-const char *line_follow_search_phase_name(line_search_phase_t phase)
-{
-    switch (phase) {
-    case LINE_SEARCH_IDLE:
-        return "IDLE";
-    case LINE_SEARCH_ROTATE:
-        return "ROTATE";
-    case LINE_SEARCH_SETTLE:
-        return "SETTLE";
     default:
         return "UNKNOWN";
     }

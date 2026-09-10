@@ -25,10 +25,8 @@ typedef enum {
 
 typedef struct {
     line_follow_state_t state;
-    int error;
     int forward;
     int turn;
-    bool state_changed;
 } line_follow_result_t;
 
 typedef struct {
@@ -38,6 +36,11 @@ typedef struct {
     uint32_t lost_ms;
     uint32_t all_black_ms;
     uint32_t invalid_ms;
+    /* Test-only: lost-line scanning now always sweeps RIGHT first (see
+     * search_result() in line_follow.c), so the firmware writes this and never
+     * reads it back. tests/line_follow_sequence_test.c asserts it to pin that
+     * the last tracking error really was recorded. Do not delete it as "dead
+     * code" without deleting that assertion first. */
     int last_direction;
     bool last_cycle_tracking;
     int corner_direction;
@@ -66,7 +69,6 @@ line_follow_result_t line_follow_update(line_follow_controller_t *controller,
                                         int left_count,
                                         int right_count);
 const char *line_follow_state_name(line_follow_state_t state);
-const char *line_follow_search_phase_name(line_search_phase_t phase);
 
 #ifdef __cplusplus
 }

@@ -1,193 +1,232 @@
-# ESP32-S3 三轮全向车巡线避障工程
+# ESP32-S3 三轮全向视觉小车（巡线避障 + 推球入洞）
 
-该工程使用 ESP32-S3、USB UVC 摄像头（双轴 MG90S 舵机云台）、D24A 三电机驱动、编码器、
-HC-SR04 测距和一次性横移避障。正常巡线与避障后的回线均使用摄像头
-画面采样出的伪红外通道掩码（4 个固定像素块，等效红外板输出）；
-任务 2 运行时红外板应断电。
+基于 **ESP32-S3** 的三轮全向小车，用**单个 USB UVC 摄像头**（物理红外板已断开）完成两阶段任务：
 
-## 使用前配置
+1. **视觉巡线 + 超声波避障**：沿黑线行驶，遇障一次性横移绕行，识别终点横条后停车。
+2. **推球入洞**：终点确认后切到视觉伺服，把**红球推入左洞、蓝球推入右洞**。
 
-摄像头请求 480x320 MJPEG。巡线阶段以 1/8 比例解码成约 60x40 的 RGB888
-工作图（横向仍是 480 像素、四通道清晰度与几何不变，仅缩短竖向像素以降低
-软件解码耗时，把识别帧率从约 8fps 提到接近 25fps）。当前摄像头安装方向需要
-同时水平、垂直镜像，配置为：
+辅助功能：MG90S 双轴云台（固定俯角）、ST7735 LCD 仪表盘、Wi-Fi MJPEG 远程查看器。
 
-```c
-#define CAMERA_FLIP_HORIZONTAL 1
-#define CAMERA_FLIP_VERTICAL   1
+> 所有可调参数集中在 [`main/board_config.h`](main/board_config.h)；本文档中的数值均以该文件为准。
+
+---
+
+## 一、系统架构
+
+分层为 **感知 → 决策 → 运动 → 执行**。所有决策逻辑（巡线/避障/推球）都是"每 tick 输入传感器、输出运动指令"的**纯状态机**：不调用硬件、不 sleep，因此能在 PC 上用 gcc 单独编译测试（见 `tests/`）。`main.c` 用一个 **10 ms 控制循环**串起两阶段调度。
+
+```
+        USB UVC 摄像头 (MJPEG 480x320 @25fps)
+                    │  usb_stream 回调(仅拷贝+唤醒)
+                    ▼
+   camera_vision.c  专用视觉任务(绑核 core1) · 软件 JPEG 解码 → RGB888
+        │ LINE 模式(scale8, 60x40)        │ PUSH 模式(scale4, 120x80)
+        ▼                                 ▼
+   pseudo_infrared.c                  ball_vision.c
+   4 块采样 → 4bit 黑线掩码             红球/蓝球/暗洞口检测
+        │                                 │
+        ▼                                 ▼
+   line_follow.c(巡线)                ball_push.c(推球 14 态)
+   obstacle_avoidance.c(避障)             │
+        │ forward/lateral/turn            │ + drive_mode
+        └──────────────┬──────────────────┘
+                       ▼
+        main.c  10ms 循环 + 两阶段调度(RUN_PHASE_LINE → RUN_PHASE_BALL)
+                       ▼
+        drive.c  三轮运动混合 + 轮级 PI 反馈  →  motor.c  TB6612 三路 PWM
+                       ▲
+   encoder.c(三轮计数) / ultrasonic.c(测距) ── 反馈 ──┘
+
+ 旁路(不阻塞控制环)：lcd_monitor.c(仪表盘) · camera_stream.cpp(WiFi 查看器) · camera_gimbal.c(云台)
 ```
 
-确认 END 后切换为 1/4（120x80）解码，此后球和洞口的检测结果直接驱动
-小车对位射门，不再只是叠加显示。UVC 分辨率、输入帧率和专用解码任务均
-不改变，因此不会降低前半程巡线的识别帧率。
+### 模块职责
 
-两项同时为 1 等效于旋转 180°。视觉算法和 Wi-Fi 主页面共用这组配置；
-端口 81 的裸 MJPEG 流仍保持摄像头原始方向。
+| 文件 | 职责 |
+|------|------|
+| `board_config.h` | 全局唯一配置源：引脚、控制参数、视觉阈值 |
+| `infrared_sensor.h` | 共享类型 `infrared_sensor_state_t` 与 `IR_*_MASK` 掩码（物理红外板实现已移除） |
+| `camera_vision.c/h` | 视觉管线：UVC 取流 → 软解 RGB888；LINE/PUSH 双模式；加锁快照 |
+| `pseudo_infrared.c/h` | 从解码帧采样 4 个像素块生成 4bit 黑线掩码 + 终点全黑确认 |
+| `ball_vision.c/h` | 纯图像分析：红球/蓝球/暗洞口检测（逻辑坐标） |
+| `line_follow.c/h` | 巡线状态机（PD 误差 + 急弯 + 丢线搜索 + 终点停车） |
+| `obstacle_avoidance.c/h` | 一次性横移避障状态机 |
+| `ball_push.c/h` | 推球入洞视觉伺服状态机（14 态） |
+| `drive.c/h` | 三轮全向运动混合 + 轮级编码器 PI 反馈 |
+| `motor.c/h` | TB6612FNG 三路 PWM 驱动 |
+| `encoder.c/h` | 三轮正交霍尔编码器（PCNT x4） |
+| `ultrasonic.c/h` | HC-SR04 测距（中断 + 队列） |
+| `lcd.c/h` · `lcd_monitor.c/h` | ST7735 SPI 屏驱动 + 仪表盘任务 |
+| `camera_gimbal.c/h` | MG90S 双轴云台（pan/tilt，软限位钳位） |
+| `camera_stream.cpp/h` | Wi-Fi soft-AP + HTTP MJPEG 查看器（唯一 C++ 文件） |
+| `main.c` | `app_main` + 10 ms 控制循环 + 两阶段调度 |
 
-电机 GPIO、GPIO4 STBY 和三组 EA/EB 沿用 `wheel-test` 的实际配置：
-左轮 Motor D、右轮 Motor A、后轮 Motor B。GPIO4 会在电机运行前拉高，
-停车后拉低。
+---
 
-HC-SR04 使用 GPIO14 作为 TRIG、GPIO13 作为 ECHO。HC-SR04 的 ECHO 是
-5 V 信号，接入 ESP32-S3 前必须使用电阻分压或电平转换。
+## 二、硬件与接线
 
-驱动接口使用 `forward/lateral/turn` 三个分量。正 `lateral` 表示向左横移，
-横移轮速比例为 `[左, 右, 后] = [-lateral/2, lateral/2, -lateral]`；
-巡线仍保持 `[forward+turn, forward-turn, 0]`。首次运行必须架空车轮，分别
-确认正 `forward` 直行、正 `lateral` 左移、正 `turn` 右转。单个轮子方向
-错误时修改对应的 `MOTOR_*_REVERSED`，不要在控制状态机中修改符号。
+所有引脚定义见 `board_config.h`。
 
-横移阶段会自动启用三个独立的编码器 PI 速度环，以 50 ms 窗口测量各轮
-实际转速，并通过最低启动 PWM 补偿静摩擦。首次测速后，当前左移和右移
-运行 PWM 下限分别为 180 和 160。
-巡线和拐角仍使用原有开环输出。向前越障为防止低 PWM 堵转，会对左右轮
-分别启用编码器速度闭环。串口日志的 `speed_loop` 会
-显示三轮目标/实测 counts/s，用于检查某个轮子是否跟不上目标。
-当前避障横移指令为 120，对应目标约为 `[-120,+120,-240] counts/s`，用于
-减小停止时因惯性造成的横向偏移。
+| 外设 | 引脚 |
+|------|------|
+| 左轮电机 | IN1=41, IN2=42, PWM=2（`MOTOR_LEFT_REVERSED=1`） |
+| 右轮电机 | IN1=7, IN2=6, PWM=5（`MOTOR_RIGHT_REVERSED=1`） |
+| 后轮电机 | IN1=8, IN2=18, PWM=17（`MOTOR_REAR_REVERSED=0`） |
+| 电机使能 STBY | GPIO4（运行前拉高，停车拉低） |
+| 左编码器 | A=40, B=39 |
+| 右编码器 | A=15, B=16（`ENCODER_RIGHT_REVERSED=1`） |
+| 后编码器 | A=3, B=46 |
+| 超声波 HC-SR04 | TRIG=14, ECHO=13（ECHO 是 5 V，必须分压/电平转换） |
+| 云台舵机 | PAN=45, TILT=21（50 Hz） |
+| LCD（ST7735S） | CS=9, SCK=10, SDI=11, DC=12, RST=38, BLK=-1（常亮） |
+| USB 摄像头 | GPIO19/20（ESP32-S3 USB D-/D+ 内部固定） |
 
-## 控制行为
+> **GPIO19/20 已独占给 USB UVC 摄像头**，因此烧录/串口监视请使用板子的 **UART 下载口**（CH340/CP2102 桥芯片那个）；程序运行后原生 USB 口（Type-C）会断开，属正常现象。
 
-- 正常巡线时持续读取前向距离；进入 10 cm 范围后减速，连续两次测得
-  距离不大于 5 cm 后停车并启动一次性避障。10 cm 内的低速接近使用左右
-  轮编码器防堵转闭环：保持低速目标，但车轮停住时会自动提高对应 PWM。
-- 避障顺序为：制动、短距离后退、左横移至前方连续确认无障碍、编码器
-  定距前进、向右横移，直到视觉连续识别到黑线并对中，然后恢复巡线。
-- 左移连续确认障碍物边缘消失后仍保持横移 250 ms，留出板边安全余量；
-  前进完成要求左右轮分别达到约 700 counts，单轮空转不会提前进入右移。
-- 避障只执行一次。测距数据超时、任一运动阶段超时、编码器堵转或横移
-  超过安全上限都会进入 `FAULT_STOP` 锁定停车。
-- `AVOID_FORWARD_TARGET_COUNTS`、横移计数和各阶段速度是低速初值，必须
-  按实际障碍长度、车体尺寸、轮径及地面摩擦进行标定。
+### 驱动接口约定
 
-- 视觉部分在画面 70% 高度处固定采样 4 个 6×6 像素块，位置分别对应
-  四个红外通道（左→右：通道4→通道1，即 x=W/8、3W/8、5W/8、7W/8）。
-  块内低于该行自适应阈值的暗像素达到设定数量即视为压到黑线，输出与
-  真红外板一致的 4 位掩码。Wi-Fi 主页面会把这 4 个采样块画成绿框。
-- 掩码位序与红外板一致：bit0=通道1=车右，bit3=通道4=车左。黑线落在
-  两通道之间的空隙时会输出全白（丢线），控制器据此进入低速搜索。
-- 终点是横穿四个采样块的 2～3 cm 黑线；四通道连续 3 帧同时为黑后锁存
-  `finish_detected`，输出全黑 0x0F 并触发停车。
-- 上电初始化成功后等待 3 秒才开始运动。
-- 摄像头未连接、画面超过 1.5 秒未更新、持续丢线或避障阶段异常都会锁定
-  停车；已确认的 END 则进入推球任务。
+驱动层用 `forward / lateral / turn` 三个分量（命令范围 −1000..1000）：
 
-## 视觉对位推球射门
+- 正 `forward` 直行；正 `lateral` **向左**横移；正 `turn` **向右**转。
+- 三轮全向混合（`drive_mix_motion`）：横移时三轮都参与，比例 `[左, 右, 后] = [-lateral/2, +lateral/2, -lateral]`；纯巡线为 `[forward+turn, forward-turn, 0]`。
+- **首次运行必须架空车轮**，分别确认正 `forward` 直行、正 `lateral` 左移、正 `turn` 右转。单个轮子方向错误时改对应的 `MOTOR_*_REVERSED`，不要在状态机里改符号。
 
-只有摄像头确认 END 横条后才允许启动推球任务；普通丢线会锁定停车。确认
-END 后的动作顺序为：
+横移/低速接近/越障直行阶段会自动启用**三个独立的编码器 PI 速度环**（50 ms 窗口测速 + 最低启动 PWM 补偿静摩擦）；巡线和拐角仍为开环输出。
 
-1. 停稳 `BALL_SCRIPT_SETTLE_MS`，再以 `BALL_SCRIPT_ADVANCE_LATERAL`
-   提供小量向右补偿，定距前进 `BALL_SCRIPT_ADVANCE_COUNTS`
-   到能同时看到球和洞口的位置。这是唯一保留的开环阶段，取代了原来的
-   编码器定角右转。
-2. `ACQUIRE`：原地等待，直到当前目标球（先红后白）和至少一个合规洞口
-   出现在同一帧，并连续保持 `BALL_ACQUIRE_CONFIRM_FRAMES` 帧。
-3. `ALIGN_STRAFE`：横移对位。旋转对球和洞的图像偏移影响相同，无法改变
-   两者的列差；只有平移能改变，因为近处的球比远处的洞视差更大。该阶段
-   按列差做比例横移，直到球心与洞心落在同一图像列，也就是车、球、洞
-   共线。
-4. `ALIGN_TURN`：原地旋转，把这一列转到画面中线，即车头对准射门线。驱动层
-   只在有横移分量时才闭合轮速环，纯旋转是开环 PWM，一帧时间就能转过
-   十几度，所以这一步按编码器计数分成微步：转够对应的计数就停住，等下一
-   帧重新测量再转。另外原地旋转的瞬时中心在驱动轴而不在摄像头，大角度
-   旋转会把摄像头横向带偏一点、重新引入列差，所以两个阶段是迭代的：
-   发现不共线就再回横移一轮，总共最多 `BALL_ALIGN_MAX_ROUNDS` 轮。
-5. `PUSH`：沿对准好的射门线直推。目标球连续 `BALL_PUSH_SCORE_LOST_FRAMES`
-   帧消失（入洞）且已推过 `BALL_PUSH_MIN_SCORE_COUNTS` 即提前结束，
-   `BALL_PUSH_MAX_COUNTS` 是编码器兜底。
-6. `RETREAT`：后退 `BALL_SCRIPT_RETREAT_COUNTS`，把目标色切到白球并重复
-   第 2～6 步；白球推完进入 `COMPLETE` 停车。
+---
 
-射门不区分左右洞口：两个洞都可见时选离目标球更近的那个，只看到一个洞时
-直接使用（分析器此时不做左右归属）。因此不再需要用胶带把球固定在标定好
-的球道上，只要前进结束时球和洞在画面里即可。
+## 三、视觉系统
 
-每段动作之间停车 `BALL_SCRIPT_SETTLE_MS`。前进、推球、后退是单向定距阶段，
-要求左右轮中的较慢轮达到目标计数；两个对位阶段会来回修正，所以它们的预算
-和堵转判据统计的是累计行程而不是相对起点的位移，方向反转不会被误判成
-车轮堵转。单轮空转不会提前结束，堵转或阶段超时会进入 `FAULT_STOP`。视觉
-阶段的帧率只有几帧每秒，控制环仍是 10 ms，所以每帧只被消费一次，帧间
-保持上一次的对位指令。
+### 摄像头与解码
 
-所有现场参数集中在 `main/board_config.h`：
+- UVC 摄像头请求 **480×320 MJPEG @25 fps**。
+- 软件 JPEG 解码很重，放在**专用视觉任务并绑到 core 1**（控制环与 Wi-Fi 在 core 0），解码期间新帧直接丢弃，避免抢占导致延迟膨胀。
+- 双解码尺度：巡线 `CAMERA_DECODE_SCALE=8`（→ 60×40 工作图）；推球 `PUSH_CAMERA_DECODE_SCALE=4`（→ 120×80，用于识别小球/洞口）。确认 END 后才切换，不影响前半程帧率。
+- 当前摄像头倒装，`CAMERA_FLIP_HORIZONTAL=1` + `CAMERA_FLIP_VERTICAL=1`（等效旋转 180°）。视觉算法与 Wi-Fi 主页共用此校正；端口 81 的裸 MJPEG 流保持摄像头原始方向。
 
-- `BALL_SCRIPT_ADVANCE_*`：END 到射门起始位置的距离和速度。
-- `BALL_ACQUIRE_*`：等待球和洞同框的超时与确认帧数。超时说明前进距离或
-  云台俯角不对，会进入 `FAULT_STOP`；这里刻意不做盲搜，以免破坏已知位姿。
-- `BALL_ALIGN_COL_TOL_PERCENT`、`BALL_ALIGN_CENTER_TOL_PERCENT`：共线和
-  居中的容差，按画面宽度的百分比给出（球模式画面宽 120 像素，8% 约
-  10 像素）。
-- `BALL_ALIGN_STRAFE_*`：横移伺服的比例增益和输出上下限。下限必须高于
-  驱动静摩擦，否则残余误差给出的指令车轮不动，会被堵转保护误判成故障。
-- `BALL_ALIGN_TURN_*`：旋转微步的输出速度（复用巡线细调转速
-  `LINE_SEARCH_FINE_TURN`）、每像素误差对应的编码器计数和单步上下限。
-- `BALL_ALIGN_MAX_*`：单个对位阶段的横移/旋转编码器预算和总超时，超出即
-  判定无法对准。
-- `BALL_PUSH_*`、`BALL_SCRIPT_RETREAT_*`：推球速度、入洞判定和后退距离。
+### 伪红外巡线采样（`pseudo_infrared.c`）
 
-首次标定建议架空车轮，确认两个方向的符号：列差为正（球在洞的右侧）时应
-向右横移，平均误差为正（球和洞都偏画面右侧）时应向右旋转。串口日志的
-`shot=[球误差,洞误差]` 以像素给出目标相对画面中线的偏移（正为车右），
-`det=` 给出球和洞的可见性，可直接用来调增益和容差。
+在画面 **70% 高度**（`PSEUDO_IR_SAMPLE_ROW_PERCENT`）处固定采样 **4 个像素块**，等效替代物理红外板的 4 通道：
 
-编码器使用 ESP32-S3 PCNT 做三路 x4 正交计数。串口日志中的 `enc` 是累计
-计数；日志中如果前进计数方向与注释不一致，应检查接线和
-`ENCODER_*_REVERSED`。视觉巡线本身为开环电机输出，编码器闭环用于低速
-接近、横移和向前越障阶段。
+- 块边长 `PSEUDO_IR_BLOCK_SIZE=4`（60 px 宽图上约 5 px）。
+- 4 个通道的横向中心为图宽百分比：**CH1=65%、CH2=54%、CH3=47%、CH4=35%**（CH1=车右，CH4=车左）。内侧 CH2/CH3 跨越正中，使居中黑线同时点亮两块（误差 0），不会落入中缝读成全白丢线。
+- 每块用**行自适应阈值**（该行亮度均值 − `PSEUDO_IR_BLACK_MARGIN=40`）判暗像素，暗像素数 ≥ `PSEUDO_IR_BLOCK_DARK_MIN=2` 即视为压线。
+- 输出 4bit 掩码，位序与红外板一致：**bit0=CH1=车右，bit3=CH4=车左**。
+- **终点**：横穿 4 块的黑线使掩码全黑 `0x0F`，连续 `PSEUDO_IR_FINISH_CONFIRM_FRAMES=3` 帧确认后锁存 `finish_detected` 并触发停车。
 
-故障停车为锁定状态，需要复位开发板才能再次启动；完成两球后也保持停车。
+> 调参后需在低速实地验证三条：①居中线点亮内侧两块（WBBW，误差 0）；②偏到某通道只点亮该块；③终点横条稳定确认全黑。
 
-## 摄像头云台（MG90S 双轴舵机）
+### 球与洞口检测（`ball_vision.c`）
 
-摄像头由两个 MG90S 舵机承载：一个水平（pan）、一个竖直（tilt）。固件目前
-只把云台固定到一个角度——上电初始化时转到各自的 `CENTER_DEG` 并持续保持，
-运行中不会随巡线动态转动（未做视觉追踪）。
+在 PUSH 模式的 120×80 图上检测（逻辑坐标与 Wi-Fi 查看器一致，y=0 为远端桌边/洞口）：
 
-角度用舵机轴角度（0~180）表示，当前装配约定：
+- **红球**：纯色度优势判据（R−G、R−B ≥ 25），无绝对亮度门限，抗欠曝。
+- **蓝球**：B−R、B−G 色度优势 + 饱和度/亮度下限，比旧的"白球"判据更抗中性背景与阴影。
+- **洞口**：桌面远端（y < 55% 高度）的暗、低饱和区域，且需触及画面远边。
+- 输出球心/半径（半径作距离代理）、洞口位置，以及红/蓝/暗区像素计数（串口日志的 `px=[r=.. b=..]` 与 `/status` 的 `rp`/`blp`/`pp` 字段，用于现场判断色度阈值偏紧还是偏松）。
 
-- 水平 pan：0° = 摄像头朝右（增大方向朝左，具体以实测为准）。
-- 竖直 tilt：0° = 摄像头朝正上，角度增大向下俯；向下约到 120° 时被车体
-  结构挡住无法继续，这是机械硬限位。
+---
 
-舵机是开环器件：MG90S 只有电源/地/信号三根线，信号只进不出，不会回传
-实际角度。固件无法知道上电前云台停在几度，只能命令目标角度、由舵机自己
-转到位并保持。因此固定朝向依赖装配时把舵盘对准，再用 `CENTER_DEG` 微调。
+## 四、任务一：巡线 + 避障（`RUN_PHASE_LINE`）
 
-配置集中在 `main/board_config.h`：
+### 巡线状态机（`line_follow.c`）
 
-```c
-#define CAMERA_PAN_SERVO_GPIO        45   /* 水平舵机信号脚 */
-#define CAMERA_TILT_SERVO_GPIO       21   /* 竖直舵机信号脚 */
-#define SERVO_PWM_FREQ_HZ            50
-#define SERVO_PULSE_MIN_US         1000   /* 轴   0° */
-#define SERVO_PULSE_MAX_US         2000   /* 轴 180° */
+`WAITING_LINE`（等线）→ `TRACKING`（PD 误差巡线）→ `CORNER_CANDIDATE/ROTATE/EXIT`（急弯武装与旋转通过）→ `LOST_SEARCH`（丢线低速旋转搜索）→ `STOPPED`（终点全黑或超时停车）。
 
-#define CAMERA_PAN_SERVO_MIN_DEG      0   /* 水平：限位与固定角 */
-#define CAMERA_PAN_SERVO_MAX_DEG    180
-#define CAMERA_PAN_SERVO_CENTER_DEG 120
+主要参数：`LINE_BASE_FORWARD=170`、`LINE_KP=70`、`LINE_KD=15`、`LINE_TURN_LIMIT=250`；急弯确认窗口 `LINE_CORNER_CONFIRM_WINDOW_MS=450`（须大于一帧间隔）；上电后 `LINE_START_DELAY_MS=3000` 才开始运动。
 
-#define CAMERA_TILT_SERVO_MIN_DEG    30   /* 竖直：限位与固定角 */
-#define CAMERA_TILT_SERVO_MAX_DEG   150
-#define CAMERA_TILT_SERVO_CENTER_DEG 100
+### 避障状态机（`obstacle_avoidance.c`）
+
+持续读前向距离，进入 `AVOID_SLOW_DISTANCE_MM=150` 减速，连续 `AVOID_TRIGGER_CONFIRM_SAMPLES=2` 次 ≤ `AVOID_TRIGGER_DISTANCE_MM=50` 触发一次性避障：
+
+```
+ARMED → BRAKE → STRAFE_LEFT → FORWARD_PASS → STRAFE_RIGHT_FIND_LINE → COMPLETE
+                                                                  └→ FAULT_STOP
 ```
 
-- 改固定朝向：只改两个 `CENTER_DEG`，重新编译烧录即可。
-- 软限位：每条角度指令都会被钳位到对应轴的 `MIN_DEG`~`MAX_DEG`，舵机不会
-  被命令去撞机械挡块（避免堵转发热）。竖直向下被挡的角度就是
-  `CAMERA_TILT_SERVO_MAX_DEG` 应填的真实值，请按实测设置。
-- 接线与供电：舵机需独立且电流足够的 5 V（MG90S 堵转可达约 1 A），电源地
-  必须与开发板共地；信号线分别接上表两个 GPIO（GPIO45 是 strapping 引脚，
-  作舵机输出上电后可用，若遇启动异常可优先换到非 strapping 脚）。
-- 云台使用独立 LEDC 定时器/通道（TIMER_1、CHANNEL_3/4），与电机的 TIMER_0、
-  CHANNEL_0~2 不冲突。两个 GPIO 都设为 -1 时云台禁用、摄像头固定不动，
-  `camera_gimbal_init()` 只打印一条 warning。
-- 上电自检：临时把某个 `CENTER_DEG` 改成明显不同的角度并重新烧录，上电瞬间
-  对应舵机应转过去；不动则检查供电、共地和信号线序。
+- **无后退阶段**：制动后直接左横移绕行（旧文档描述的"短距离后退"已不存在）。
+- `STRAFE_LEFT`：左横移直到前方连续确认无障碍（`AVOID_CLEAR_DISTANCE_MM=120`）；确认边缘消失后仍保持横移 `AVOID_LEFT_CLEARANCE_MS=250` 留板边余量。
+- `FORWARD_PASS`：编码器定距前进越过障碍（`AVOID_FORWARD_TARGET_COUNTS`），对左右轮分别闭环防低 PWM 堵转。
+- `STRAFE_RIGHT_FIND_LINE`：右移直到视觉连续识别到黑线并对中，然后恢复巡线（`just_completed` 会重置巡线控制器）。
+- **避障只执行一次**。测距超时、任一阶段超时、编码器堵转或横移超安全上限都会进入 `FAULT_STOP` **锁定停车**（需复位开发板）。推球阶段避障结构性关闭（超声波会把球/桌沿当障碍）。
 
-## 构建
+---
 
-在 ESP-IDF 5.4.x PowerShell 环境中执行：
+## 五、任务二：推球入洞（`RUN_PHASE_BALL`）
+
+**只有确认 END 横条后**才启动（普通丢线会锁定停车）。切换时把摄像头解码切到 scale 4，并做一次云台俯角调整（`BALL_GIMBAL_TILT_DEG=110`，等待 `BALL_GIMBAL_SETTLE_MS=600`）。注意该角度当前与 `CAMERA_TILT_SERVO_CENTER_DEG` 相同，而 `camera_gimbal_init()` 开机已把俯角回中，所以这次调整目前是空操作、只白等 600 ms；若推球确实需要与巡线不同的俯角，把两个宏改成不同值即可。
+
+任务映射（`board_config.h`）：**红球（FIRST_COLOR=0）→ 左洞（FIRST_POCKET=0）**，**蓝球（SECOND_COLOR=1）→ 右洞（SECOND_POCKET=1）**。
+
+控制原理（`ball_push.c`）：`START_FORWARD → FIND_BALL/SCAN → APPROACH（相位 0 横移居中 → 相位 1 远场转向对准洞 + 可选 FAR_SPRINT → 相位 2 强制直行接近）→ ALIGN（只横移，把球挪到洞所在的列）→ HARD PUSH（定时纯直行）→ EGRESS 后退 → POST_EGRESS 转向 + 前进 → 下一球`。
+
+**两条关键规则：ALIGN 阶段既不前进、也不旋转。** 朝向在球还很远时（APPROACH 相位 1）就已修正完毕；贴着球旋转正是把蓝球滚丢、进而丢失目标的原因。
+
+14 态状态机（`ball_push.h`）：
+
+| 状态 | 作用 |
+|------|------|
+| `START_FORWARD` | 从起跑线固定短直行（`PUSH_START_FORWARD_MS`） |
+| `FIND_BALL` / `SCAN` | 获取目标球；找不到则旋转扫描（`PUSH_SCAN_*`） |
+| `APPROACH_BALL` | 先横移居中（phase 0），再强制直行接近（phase 1，`PUSH_APPROACH_*`） |
+| `ALIGN` | **只横移**：把球挪到洞所在的列，再保持居中一段确认窗口（`PUSH_ALIGN_STRAFE_*`、`PUSH_ALIGN_DEADBAND_PX`、`PUSH_ALIGN_CONFIRM_MS`）。球已进入保险杠距离（`PUSH_ALIGN_SAFE_RADIUS_PX`）则转 `BACKOFF` |
+| `BACKOFF` | 球太近：定距后退（`PUSH_BACKOFF_SPEED/COUNTS`）再回 `ALIGN`。**没有循环次数上限**，来回弹跳最终由整任务超时兜底 |
+| `FAR_SPRINT` | 远场已对准时开环冲刺（`PUSH_FAR_SPRINT_ENABLE=1`，绕过近场视觉盲区）；行程由球的 `cy` 估算，编码器定距、堵转则转 `BACKOUT` |
+| `PUSH` | 纯直行强推，**定时结束**（`PUSH_HARD_FORWARD`、`PUSH_HARD_PUSH_MS`）：无转向修正、无定距目标、无堵转监督、也无入袋像素确认——时间一到即记为已入袋 |
+| `BACKOUT` | **纯决策态，自身不产生任何运动**：`FAR_SPRINT` 堵转后在同一 tick 内决定回 `FIND_BALL`（本球未入袋）还是 `EGRESS` |
+| `EGRESS` | 进洞后后退离场（`PUSH_EGRESS_*`） |
+| `POST_EGRESS_TURN/FORWARD` | 离场后转向 + 前进到利于找下一球的位置 |
+| `DONE` / `FAULT_STOP` | 两球入洞（粘滞）/ 超时·堵转·扫描腿耗尽（粘滞锁定） |
+
+- **没有"每球重试上限"**：`BACKOFF`/`BACKOUT` 的回环只受整任务超时 `BALL_TASK_TIMEOUT_MS=180000` 约束，超时即 `FAULT_STOP`。
+- 定距阶段（`SCAN`/`BACKOFF`/`FAR_SPRINT`/`EGRESS`/`POST_EGRESS_*`）的行程统一统计为 **`|Δ左| + |Δ右|` 的累计值**（不是位移，也不是较慢轮），因此对位阶段来回修正、方向反转都不会误判堵转；同一套 `PUSH_SCAN_STALL_MS` / `PUSH_SCAN_STALL_COUNTS` 窗口兼做堵转看门狗。`PUSH` 和 `START_FORWARD`/`ALIGN` 则是纯时间窗口，不看编码器。
+- 视觉帧率仅几帧/秒而控制环 10 ms，故每帧只消费一次，帧间保持上次对位指令。
+- `FAULT_STOP` 为锁定态，需复位开发板；两球完成后也保持停车。
+
+---
+
+## 六、Wi-Fi 摄像头查看器（`camera_stream.cpp`）
+
+不接串口、不装 App：小车自建 Wi-Fi 热点，浏览器即可看方向校正后的画面 + 算法实时判定叠加。随主程序自动启动（在相机启动**之前**，即使相机故障 `/status` 也能报因）。
+
+**连接**：SSID `vison_car` / 密码 `12345678`（提示"无互联网"忽略），浏览器打开 `http://192.168.4.1/`。
+
+| URL | 用途 |
+|-----|------|
+| `http://192.168.4.1/` | 观看页：MJPEG 画面 + 伪红外采样块/通道掩码/状态叠加 |
+| `http://192.168.4.1/status` | 纯 JSON：`mask`、`img_w/h`、`block`、`row_pct`、球/洞结果与帧统计 |
+| `http://192.168.4.1:81/stream` | 摄像头原始方向的裸 MJPEG 流（VLC "网络串流"亦可） |
+
+- 主页 4 个方框即伪红外采样块（采样行 70% 高度，黄色虚线标出），亮绿=压线、暗=未压。叠加坐标与算法使用的镜像校正坐标一致。线在通道位置但方块没亮 → 块内暗像素未达 `PSEUDO_IR_BLOCK_DARK_MIN`，需校准采样行/块大小/阈值。
+- 参数在 `board_config.h` 末尾：`STREAM_AP_SSID/PASSWORD/CHANNEL=6`、`STREAM_HTTP_PORT=80`、`STREAM_MJPEG_PORT=81`、`STREAM_MAX_CLIENTS=1`、`STREAM_POLL_MS=40`。
+- 推流直接转发摄像头 MJPEG 原码流、**不重编码**，CPU 开销近乎为零。
+
+**限制/排障**：MJPEG 流同一时间只支持 1 个客户端（第二个得 503），页面/状态不受限；看不到热点 → 查串口 `camera_stream` 标签日志（推流失败只告警、不影响跑车）；流一直转圈 → 相机还没出首帧（看 `/status` 的 `started/connected/age_ms`）。
+
+---
+
+## 七、LCD 实时仪表盘（`lcd.c` + `lcd_monitor.c`）
+
+LQ_TFT18SPI V3.3 1.8″ SPI 屏（ST7735S，128×160，IPS）。独立任务每 `LCD_MONITOR_PERIOD_MS=200` 刷新，只重绘变化行、无闪烁；面板缺失时小车照常运行（`main.c` 中失败仅告警）。
+
+```
+SMART CAR              （青色标题）
+LEFT   123 RPM         （黄色，带符号，二倍字号）
+RIGHT  123 RPM
+REAR   123 RPM
+DIST   12.3 CM         （绿色，最近 5 次有效测距的中值）
+US:OK / US:NO ECHO     （底部状态行，无回波变红）
+```
+
+- 转速单位 rpm（负值=倒转）；距离单位 cm、保留 1 位小数，取最近 `LCD_MONITOR_DISTANCE_MEDIAN=5` 次有效读数的**中值**滤除毛刺。
+- **转速标定**：`WHEEL_COUNTS_PER_REV=1560`（默认 13 线霍尔 ×4 倍频 ×30 减速比）。若 rpm 整体偏一个比例：架空车、串口看 `enc=`、手转驱动轮整一圈记下计数差，填入该宏。
+- 面板调优（`board_config.h`）：画面偏移调 `LCD_X_OFFSET/Y_OFFSET`；颜色负片改 `LCD_INVERT_COLORS`；红蓝互换改 `LCD_SWAP_RB`；花屏降 `LCD_CLOCK_HZ`（当前 10 MHz）。
+
+---
+
+## 八、构建与烧录
+
+在 ESP-IDF 5.4.x 的 PowerShell 环境中：
 
 ```powershell
 cd D:\idf_intelligent_car_txgayay\vison_lnf_avoid
@@ -196,6 +235,52 @@ idf.py build
 idf.py -p COM端口 flash monitor
 ```
 
-先架空车轮确认方向，再在安全低速场地测试。伪红外采样参数见
-`main/board_config.h` 的 `PSEUDO_IR_*`（采样行、块大小、黑色阈值、
-终点宽度与确认帧数）；巡线/避障的 PWM 参数沿用原红外工程的同名宏。
+- 依赖组件（`main/idf_component.yml`）：`usb_stream`（UVC 取流）、`esp_jpeg`（软解码）。`cmake_utilities` 是 `usb_stream` 带入的传递依赖，只出现在 `dependencies.lock` 中。
+- 分区表 `partitions.csv`：nvs + phy_init + factory app（8 MB）。
+- 若烧录报 `Could not open COMx, the port is busy or doesn't exist`：检查设备是否插好、COM 口是否变化、串口监视器是否占用端口，或让设备进入下载模式后重试。
+- **务必先架空车轮确认三轮方向**，再在安全低速场地测试。
+
+---
+
+## 九、宿主机单元测试（`tests/`）
+
+6 个纯逻辑单元测试用 PC 端 gcc 编译运行（无需硬件），覆盖最易错、迭代最慢的状态机与运动学，**当前全部通过**：
+
+| 测试 | 覆盖 |
+|------|------|
+| `drive_mix_test.c` | 三轮运动混合 + 3 种反馈模式（**精确 PWM 数值断言**） |
+| `pseudo_infrared_test.c` | 4 通道掩码生成（含真实 60×40 尺寸几何、终点确认） |
+| `line_follow_sequence_test.c` | 巡线状态机时序 |
+| `obstacle_avoidance_test.c` | 避障状态机各阶段 |
+| `ball_push_sequence_test.c` | 推球 14 态转移、各阶段运动分量与驱动模式、终态发布 |
+| `ball_vision_test.c` | 红/蓝球 + 洞口检测（合成图像） |
+
+编译运行（任意安装了 gcc 的环境，在工作区根目录）：
+
+```sh
+gcc -std=gnu17 -Wall -Wextra -Imain -Itests/stubs -o /tmp/t_dm  tests/drive_mix_test.c            main/drive.c
+gcc -std=gnu17 -Wall -Wextra -Imain -Itests/stubs -o /tmp/t_pir tests/pseudo_infrared_test.c      main/pseudo_infrared.c
+gcc -std=gnu17 -Wall -Wextra -Imain -Itests/stubs -o /tmp/t_lf  tests/line_follow_sequence_test.c main/line_follow.c
+gcc -std=gnu17 -Wall -Wextra -Imain -Itests/stubs -o /tmp/t_oa  tests/obstacle_avoidance_test.c   main/obstacle_avoidance.c
+gcc -std=gnu17 -Wall -Wextra -Imain -Itests/stubs -o /tmp/t_bv  tests/ball_vision_test.c          main/ball_vision.c -lm
+gcc -std=gnu17 -Wall -Wextra -Imain -Itests/stubs -o /tmp/t_bp  tests/ball_push_sequence_test.c   main/ball_push.c main/ball_vision.c -lm
+```
+
+`tests/stubs/esp_err.h` 提供脱离 ESP-IDF 的最小桩；部分测试内联硬件桩（如 `motor_set_all`）。这些测试**不被 `idf.py build` 自动运行**，也不被 `idf_component.yml` 引用，需手动编译。
+
+> **改过 `board_config.h` 里的 `DRIVE_*` PWM 标定后，`drive_mix_test.c` 会失败——这是故意的。** 它把静摩擦前馈、P+I 修正与抗积分饱和的输出值写死成具体数字（每个断言旁都给出了推导公式），目的是在标定漂移时强制你确认新值是有意的。请重新推导后更新期望值，**不要**直接把实际输出拷进去。
+
+---
+
+## 十、故障排查
+
+| 现象 | 处理 |
+|------|------|
+| 小车锁定不动、日志 `locked stop` | `FAULT_STOP`：相机断连/帧超时、避障堵转或超时、推球重试超限。需**复位开发板** |
+| 巡线大幅摆动 | 帧率延迟 + 4 通道量化 + KP 偏高；可降 `LINE_KP`、确认采样几何，见 `PSEUDO_IR_*` |
+| 线在通道位但方块不亮 | 块内暗像素未达 `PSEUDO_IR_BLOCK_DARK_MIN`，校准采样行/块大小/`BLACK_MARGIN` |
+| 终点不停车/误停 | 检查 `PSEUDO_IR_FINISH_CONFIRM_FRAMES` 与终点横条宽度；宽暗目标可能使自适应阈值塌缩 |
+| 某轮不转/方向反 | 架空车确认 `MOTOR_*_REVERSED` 与 `ENCODER_*_REVERSED`；看串口 `vision_car` 标签每 100 ms 打的 `enc=[左,右,后]` 与 `motion=[forward,lateral,turn]`，命令为正而计数不动即该轮堵转或接线错 |
+| 烧录打不开 COM 口 | 见"构建与烧录"：设备/端口/占用/下载模式 |
+| LCD 白屏/负片/花屏 | 见"LCD 仪表盘"面板调优宏 |
+| 看不到 Wi-Fi 热点 | 查串口 `camera_stream` 日志；推流失败不影响跑车 |

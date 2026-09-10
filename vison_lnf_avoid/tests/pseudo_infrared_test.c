@@ -12,6 +12,10 @@
     }                                                                           \
 } while (0)
 
+/* 120x213 is a legacy geometry left over from the retired 480x854 UVC request
+ * (480x854 / scale 4 ~= 120x213). It is kept on purpose as a SECOND,
+ * differently-rounding image size for the percent-based channel centres, so
+ * the block math is exercised at more than one resolution. */
 #define TEST_WIDTH   120U
 #define TEST_HEIGHT  213U
 

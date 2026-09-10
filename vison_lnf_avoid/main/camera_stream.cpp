@@ -123,7 +123,8 @@ function drawLineOverlay(s){
   c.beginPath(); c.moveTo(0,y); c.lineTo(w,y); c.stroke();
   c.setLineDash([]);
   const bw = s.block*w/s.img_w, bh = s.block*h/s.img_h;
-  const cp = s.ch_pct || [74,54,47,27];
+  const cp = s.ch_pct;
+  if(!cp || cp.length < 4) return;  /* /status always sends it; never guess a geometry */
   for(let i=0;i<4;i++){
     const on = ((s.mask >>> i) & 1) !== 0;
     const x = cp[i]/100*w;
@@ -197,22 +198,24 @@ function drawOverlay(s){
 function pushStatusText(s){
   const left = s.push_attempt === 0 ? '左边袋' : '右边袋';
   const ball = s.push_attempt === 0 ? '红球' : '蓝球';
+  /* case numbers must match ball_push_state_t in main/ball_push.h exactly. */
   switch(s.push_state){
-    case 0: return '启动直行';
-    case 1: return '找' + ball;
-    case 2: return '追' + ball;
-    case 3: return (s.r && s.r[0]) || (s.b && s.b[0]) ? '追' + ball : '找' + ball;
-    case 4: return '扫描找' + ball;
-    case 5: return s.push_pocket_visible ? '对准' + left : '靠近' + ball + '，寻找' + left;
-    case 6: return '退后重新对准';
-    case 7: return '推' + ball + '入洞';
-    case 8: return '推入失败，重新搜索';
-    case 9: return '退出边界';
-    case 10: return '右转调整位置';
-    case 11: return '前进寻找蓝球';
-    case 12: return '两球已完成';
-    case 13: return '故障停止';
-    default: return '启动';
+    case 0: return '启动直行';                 /* START_FORWARD */
+    case 1: return '找' + ball;                /* FIND_BALL */
+    case 2: return '追' + ball;                /* APPROACH_BALL */
+    case 3: return '扫描找' + ball;             /* SCAN */
+    case 4: return s.push_pocket_visible ? '横移对准' + left
+                                         : '横移靠近' + ball + '，寻找' + left; /* ALIGN */
+    case 5: return '退后重新对准';              /* BACKOFF */
+    case 6: return '远场开环冲刺';              /* FAR_SPRINT */
+    case 7: return '推' + ball + '入洞';        /* PUSH */
+    case 8: return '冲刺受阻，重新找球';         /* BACKOUT */
+    case 9: return '退出边界';                 /* EGRESS */
+    case 10: return '右转调整位置';             /* POST_EGRESS_TURN */
+    case 11: return '前进寻找蓝球';             /* POST_EGRESS_FORWARD */
+    case 12: return '两球已完成';               /* DONE */
+    case 13: return '故障停止';                 /* FAULT_STOP */
+    default: return '未知状态 ' + s.push_state;
   }
 }
 function updatePushStatus(s){
@@ -224,7 +227,7 @@ function updatePushStatus(s){
   box.className = 'pushStatus ' + (s.red_pocketed && s.blue_pocketed ? 'done' : '');
   title.textContent = pushStatusText(s);
   const target = s.push_attempt === 0 ? '红球 → 左边袋' : '蓝球 → 右边袋';
-  sub.textContent = target + '　重试 ' + s.push_retry + ' 次';
+  sub.textContent = target;
 }
 async function poll(){
   try{
@@ -289,7 +292,7 @@ static esp_err_t page_handler(httpd_req_t *req)
 
 static esp_err_t status_handler(httpd_req_t *req)
 {
-    camera_vision_status_t camera = {0};
+    camera_vision_status_t camera{};   /* C++ value-init: {0} would warn here */
     (void)camera_vision_get_status(&camera);
     const int64_t age_ms = camera.last_frame_us == 0 ? -1 :
         (esp_timer_get_time() - camera.last_frame_us) / 1000LL;
@@ -298,7 +301,7 @@ static esp_err_t status_handler(httpd_req_t *req)
      * p1/p2 = [present, x0, y0, x1, y1], all in LOGICAL working-grid px
      * (120x80 in push mode) - the same flip-corrected frame the page shows. */
     const camera_vision_mode_t mode = camera_vision_get_mode();
-    ball_vision_result_t ball = {0};
+    ball_vision_result_t ball{};
     (void)camera_vision_get_ball_result(&ball);
     const ball_blob_t *red = ball.valid ?
         ball_vision_find_ball(&ball, BALL_COLOR_RED) : NULL;
@@ -307,7 +310,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     ball_push_status_t push_status{};
     ball_push_get_status(&push_status);
 
-    char json[1536];
+    char json[1024];
     const int len = snprintf(json, sizeof(json),
         "{\"started\":%d,\"connected\":%d,\"frames\":%u,\"drop\":%u,"
         "\"dec_fail\":%u,\"age_ms\":%lld,\"mask\":%u,"
@@ -318,12 +321,10 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"p1\":[%d,%d,%d,%d,%d],\"p2\":[%d,%d,%d,%d,%d],"
         "\"push_state\":%d,"
         "\"push_attempt\":%u,"
-        "\"push_retry\":%u,"
-        "\"push_ball_visible\":%d,"
         "\"push_pocket_visible\":%d,"
         "\"red_pocketed\":%d,"
         "\"blue_pocketed\":%d,"
-        "\"t\":%u,\"rp\":%u,\"blp\":%u,\"pp\":%u,\"lh\":[",
+        "\"rp\":%u,\"blp\":%u,\"pp\":%u}",
         camera.started ? 1 : 0,
         camera.connected ? 1 : 0,
         (unsigned)camera.received_frames,
@@ -361,39 +362,18 @@ static esp_err_t status_handler(httpd_req_t *req)
         ball.pockets[1].visible ? ball.pockets[1].y1 : 0,
         (int)push_status.state,
         push_status.attempt,
-        push_status.retry,
-        push_status.target_ball_visible ? 1 : 0,
         push_status.target_pocket_visible ? 1 : 0,
         push_status.red_pocketed ? 1 : 0,
         push_status.blue_pocketed ? 1 : 0,
-        (unsigned)ball.table_luma,
         (unsigned)ball.red_px,
         (unsigned)ball.blue_px,
         (unsigned)ball.pocket_px);
-    int json_len = len;
-    if (len >= 0 && (size_t)len < sizeof(json)) {
-        for (unsigned i = 0; i < 16; ++i) {
-            const int n = snprintf(json + json_len, sizeof(json) - (size_t)json_len,
-                                  "%s%u", i == 0 ? "" : ",",
-                                  (unsigned)ball.luma_hist[i]);
-            if (n < 0 || (size_t)n >= sizeof(json) - (size_t)json_len) {
-                return ESP_ERR_NO_MEM;
-            }
-            json_len += n;
-        }
-        const int n = snprintf(json + json_len, sizeof(json) - (size_t)json_len,
-                               "]}");
-        if (n < 0 || (size_t)n >= sizeof(json) - (size_t)json_len) {
-            return ESP_ERR_NO_MEM;
-        }
-        json_len += n;
-    }
     if (len < 0 || (size_t)len >= sizeof(json)) {
         return ESP_ERR_NO_MEM;
     }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, json, (ssize_t)json_len);
+    return httpd_resp_send(req, json, (ssize_t)len);
 }
 
 /* ------------------------------------------------------------------ */
@@ -412,7 +392,6 @@ static esp_err_t stream_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    esp_err_t result = ESP_OK;
     uint8_t *frame = static_cast<uint8_t *>(heap_caps_aligned_alloc(
         16, CAMERA_UVC_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (frame == NULL) {
@@ -423,7 +402,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    result = httpd_resp_set_type(
+    const esp_err_t result = httpd_resp_set_type(
         req, "multipart/x-mixed-replace; boundary=frame");
     char part[72];
     uint32_t last_seq = 0;
@@ -507,7 +486,7 @@ static esp_err_t wifi_ap_start(void)
         return err;
     }
 
-    wifi_config_t ap_config = { 0 };
+    wifi_config_t ap_config{};   /* C++ value-init: { 0 } would warn here */
     (void)strlcpy((char *)ap_config.ap.ssid, STREAM_AP_SSID,
                   sizeof(ap_config.ap.ssid));
     ap_config.ap.ssid_len = (uint8_t)strlen(STREAM_AP_SSID);

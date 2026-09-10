@@ -13,15 +13,19 @@
  *
  * Bit 0 = channel 1 (car right), bit 3 = channel 4 (car left).
  */
+/* Infrared board GPIOs. The physical LQ_R4CHVB board is disconnected, so all
+ * four are -1; they are kept as named placeholders because the start-up GPIO
+ * conflict self-checks in encoder.c / ultrasonic.c / camera_gimbal.c list them
+ * among the reserved/occupied pins. Do not delete without updating those. */
 #define IR_CHANNEL_4_GPIO  (-1)
 #define IR_CHANNEL_3_GPIO  (-1)
 #define IR_CHANNEL_2_GPIO  (-1)
 #define IR_CHANNEL_1_GPIO  (-1)
 
-/* LQ_R4CHVB outputs low while its sensor is over a black line. */
-#define IR_BLACK_LEVEL              0
+/* Legacy 10 ms infrared sampling period. The physical board is gone; this
+ * constant survives only because tests/line_follow_sequence_test.c uses it as
+ * the control tick. */
 #define IR_SAMPLE_PERIOD_MS        10
-#define IR_DEBOUNCE_SAMPLE_COUNT    2
 
 /* D24A/TB6612FNG motor outputs verified by the wheel-test project. */
 #define MOTOR_LEFT_IN1_GPIO        41
@@ -59,9 +63,11 @@
 #define MOTOR_REAR_REVERSED         0
 
 /*
- * Two-wheel differential drive: only the two front wheels are driven.
- * Equal speeds = forward; positive turn = right turn (left wheel faster
- * than right). The rear wheel is passive and never driven.
+ * Three-wheel omnidirectional drive: the left, right and rear wheels are all
+ * driven (see drive_mix_motion in drive.c). Forward/backward and turning use
+ * the left/right wheels; lateral (strafe) motion additionally drives the rear
+ * wheel. Equal left/right speeds = forward; positive turn = right turn (left
+ * wheel faster than right).
  */
 
 /* Open-loop line-following parameters; all motor commands use -1000..1000. */
@@ -69,7 +75,7 @@
 #define LINE_MIN_FORWARD           120
 #define LINE_ERROR_SLOWDOWN         20
 #define LINE_KP                     70
-#define LINE_KD                     15                                          
+#define LINE_KD                     15
 #define LINE_TURN_LIMIT            250
 
 #define LINE_CORNER_ARM_MS              30
@@ -129,7 +135,10 @@
 #define CAMERA_DECODE_SCALE                   8
 /* Keep the proven 1/8 line-following path untouched.  Only after END is
  * confirmed does the decoder switch to 1/4 for the much smaller ball/hole
- * features.  The UVC request and input frame rate do not change. */
+ * features: scale 4 costs about 4x the pixels to decode (<= ~8 fps) but gives
+ * a 120x80 working image on which small balls and pockets are detectable.
+ * The UVC request and input frame rate do not change.
+ * Values must be one of 2/4/8. */
 #define PUSH_CAMERA_DECODE_SCALE              4
 
 /* Camera mounting correction. The current module is mounted upside down,
@@ -140,9 +149,10 @@
 
 /* ------------------------------------------------------------------ */
 /* Camera gimbal: two MG90S servos pan/tilt the USB camera.            */
-/* GPIOs default to -1 (NULL): camera_gimbal_init() then logs a warning */
-/* and stays disabled, so the camera remains fixed. Set both to real,   */
-/* non-conflicting output GPIOs to enable firmware centering. MG90S is  */
+/* Both axes are wired (PAN=45, TILT=21), so camera_gimbal_init()       */
+/* configures them and centres the mount at boot. Setting a GPIO to -1  */
+/* disables that one axis (its set_* becomes a no-op); with BOTH at -1  */
+/* init() only logs a warning and the camera stays fixed. MG90S is      */
 /* driven at 50 Hz; ~1000-2000 us maps to 0-180 deg of shaft travel.    */
 /* Every command is clamped to the per-axis MIN/MAX degrees below so the */
 /* horn never pushes into a mechanical stop.                            */
@@ -234,20 +244,19 @@
 /* Pocket-push task (after the line-following finish).                  */
 /* ------------------------------------------------------------------ */
 
-/* During the push phase the vision pipeline decodes each MJPEG frame at
- * PUSH_CAMERA_DECODE_SCALE instead of CAMERA_DECODE_SCALE, trading software
- * JPEG-decode throughput (scale 4 -> about 4x the pixels -> <= ~8 fps) for a
- * 120x80 working image on which small balls and pockets are detectable.
- * The line-following phase keeps scale 8. Values must be one of 2/4/8. */
-#define PUSH_CAMERA_DECODE_SCALE      4
-
 /* One-shot gimbal tilt (servo shaft degrees, clamped to
  * CAMERA_TILT_SERVO_MIN_DEG..MAX_DEG) commanded once at the LINE->BALL
  * hand-over. Adjust this to point the camera at the balls/pockets on your
  * table: 110 is the straight-forward centre on the current mount. The gimbal
  * is never moved again during the push phase. Settle time waits for the MG90S
  * to arrive; the car is stationary at the hand-over, so it only delays the
- * first push control tick. */
+ * first push control tick.
+ *
+ * NOTE: this currently equals CAMERA_TILT_SERVO_CENTER_DEG (110), and
+ * camera_gimbal_init() already centres the tilt at boot, so the hand-over
+ * command is a no-op that only spends BALL_GIMBAL_SETTLE_MS. Give the two
+ * macros different values if the push task really needs a different pitch
+ * from the line-following task; otherwise the settle delay is pure wait. */
 #define BALL_GIMBAL_TILT_DEG                110
 #define BALL_GIMBAL_SETTLE_MS              600
 
@@ -319,8 +328,9 @@
  * (diameter ~6 px, radius ~3 px, area ~25 px). So BALL_MIN_AREA_PX must stay
  * low enough for a radius-2..3 px disk to pass (a radius-2 disk is ~12 px);
  * anything below that is one or two pixels and cannot be tracked anyway.
- * The upper end must cover a ball AT THE BUMPER (~radius 30 px), where the
- * controller's CLOSE_RADIUS back-off logic takes over.
+ * The upper end must cover a ball AT THE BUMPER (~radius 30 px); the
+ * controller's own back-off gate is the much tighter
+ * PUSH_ALIGN_SAFE_RADIUS_PX, not this shape-gate ceiling.
  * BALL_COMPACTNESS_MIN is a bounding-box fill percentage (100*area/(w*h));
  * a perfect disk fills ~79%, glare streaks and tails score far lower.
  * BALL_MAX_ASPECT bounds the bbox aspect (longer*100/shorter), which rejects
@@ -332,7 +342,6 @@
  * at an angle. A disk scores ~1000, a half-moon ~400-500. */
 #define BALL_MIN_AREA_PX              10   /* radius ~= 1.8 px (far ball floor) */
 #define BALL_MAX_AREA_PX            3200   /* radius ~= 32 px (ball at bumper) */
-#define BALL_CLOSE_RADIUS_PX          14   /* above this: too close to push */
 #define BALL_COMPACTNESS_MIN          50   /* bbox fill %; disk ~= 79; glare reject */
 #define BALL_MAX_ASPECT              160   /* bbox long side *100 / short side */
 #define BALL_AXIS_RATIO_MIN_MILLE    750   /* minor/major of blob moments */
@@ -363,20 +372,15 @@
 /* Push controller speeds/timings. PWM commands are -1000..1000 unless noted.
  * Rotation counts reuse the LINE_SEARCH chassis calibration (a car rotation of
  * ~30 deg moves |dL|+|dR| by PUSH_SCAN_30_DEG_COUNTS encoder counts). */
-#define PUSH_APPROACH_FORWARD           55   /* base forward command for visual tracking */
 #define PUSH_START_FORWARD             150  /* slower startup straight run */
 #define PUSH_START_FORWARD_MS          650  /* clearly visible but gentler initial straight run */
-#define PUSH_CREEP_FORWARD              55   /* legacy */
-#define PUSH_CREEP_COUNTS              900   /* legacy */
 #define PUSH_APPROACH_FORWARD_NEAR      40   /* very slow near-ball approach */
 #define PUSH_APPROACH_FORWARD_MID       55
 #define PUSH_APPROACH_FORWARD_FAR       75
 #define PUSH_APPROACH_LATERAL_SPEED      80   /* slow strafe to avoid brushing the ball */
-#define PUSH_APPROACH_X_HARD_PX         10   /* outside this: strafe only, no forward */
 #define PUSH_APPROACH_DEADBAND_PX       10   /* visual X deadband used by ball_push.c */
 #define PUSH_APPROACH_NEAR_Y_PX         46   /* close enough to hand over to ALIGN, but still before bumper range */
 #define PUSH_APPROACH_NEAR_RADIUS_PX     8
-#define PUSH_APPROACH_LOST_HOLD_FRAMES   3   /* briefly stop/hold before recovery */
 #define PUSH_APPROACH_LOST_MAX_FRAMES    6
 #define PUSH_APPROACH_FORWARD_MIN_MS   650   /* mandatory straight phase before ALIGN */
 #define PUSH_APPROACH_STRAFE_TIMEOUT_MS 2000  /* phase 0 strafe timeout to prevent deadlock */
@@ -396,14 +400,17 @@
  * that makes the blue ball unrecognizable at close range in poor light.
  *
  * The sprint is purely encoder-supervised (like HARD_PUSH but longer), so
- * its accuracy depends on the far-field alignment quality. The two gates
- * below must be strict enough that a "confirmed" sprint rarely misses by
- * more than the ball's own width; otherwise leave the car on the normal
- * APPROACH -> ALIGN -> PUSH path. */
+ * its accuracy depends on the far-field alignment quality. Its two entry
+ * gates are the pocket-heading deadband (PUSH_APPROACH_HEADING_DEADBAND,
+ * shared with the ordinary phase-1 heading correction that the sprint trigger
+ * sits immediately behind) and PUSH_FAR_SPRINT_BALL_POCKET_PX below. They must
+ * be strict enough that a "confirmed" sprint rarely misses by more than the
+ * ball's own width; otherwise leave the car on the normal
+ * APPROACH -> ALIGN -> PUSH path. Wedging is caught by the shared
+ * PUSH_SCAN_STALL_MS / PUSH_SCAN_STALL_COUNTS window inside tick_counts(). */
 #define PUSH_FAR_SPRINT_ENABLE             1   /* 0 = disable, keep original flow only */
 #define PUSH_FAR_SPRINT_MAX_RADIUS_PX      5   /* ball must still be small (far) */
 #define PUSH_FAR_SPRINT_MAX_CY_PX         35   /* ball must be in the far half */
-#define PUSH_FAR_SPRINT_POCKET_ALIGN_PX    6   /* pocket heading error deadband */
 #define PUSH_FAR_SPRINT_BALL_POCKET_PX     6   /* ball-to-pocket lateral error gate */
 #define PUSH_FAR_SPRINT_FORWARD          200   /* charge speed (below HARD_PUSH 300) */
 /* Distance estimate: the camera looks slightly down, so logical cy maps
@@ -416,17 +423,16 @@
 #define PUSH_FAR_SPRINT_CY_SCALE          12
 #define PUSH_FAR_SPRINT_MIN_COUNTS       200   /* never sprint less than this */
 #define PUSH_FAR_SPRINT_MAX_COUNTS      1200   /* safety cap on the charge */
-#define PUSH_FAR_SPRINT_STALL_MS         300   /* same stall window as PUSH */
 
-/* Alignment: rotate so the pocket (or its fallback bearing) is centered, and
- * strafe so the ball is centered; small concurrent gains, deadband + confirm
- * window. Gains are per logical pixel of error on the 120x80 grid. */
+/* Alignment: STRAFE ONLY. Once the ball is close, ALIGN deliberately never
+ * rotates - rotating beside the ball is exactly what made the blue ball roll
+ * away and disappear. Heading is corrected earlier, during the far-away
+ * APPROACH phase 1 (PUSH_APPROACH_HEADING_*). ALIGN therefore only walks the
+ * ball onto the pocket's column, then holds it centred for a confirm window.
+ * Gains are per logical pixel of error on the 120x80 grid. */
 #define PUSH_APPROACH_HEADING_TURN      70   /* far-away heading correction only */
 #define PUSH_APPROACH_HEADING_DEADBAND  10
 #define PUSH_APPROACH_HEADING_MAX       80
-#define PUSH_ALIGN_TURN_KP              3   /* legacy; ALIGN no longer rotates near ball */
-#define PUSH_ALIGN_TURN_MAX            80
-#define PUSH_ALIGN_TURN_MIN_PWM         60
 #define PUSH_ALIGN_STRAFE_KP            2   /* direct PWM per px of ball.x err */
 #define PUSH_ALIGN_STRAFE_MAX           45
 #define PUSH_ALIGN_STRAFE_MIN_PWM       35
@@ -436,29 +442,15 @@
 
 #define PUSH_BACKOFF_SPEED             130   /* reverse away from a close ball */
 #define PUSH_BACKOFF_COUNTS            220
-#define PUSH_BACKOFF_MAX_CYCLES          4   /* ALIGN<->BACKOFF cycles -> fault */
 
-#define PUSH_PUSH_FORWARD              140
+/* The final impact is a fixed, strong, purely straight command: no visual
+ * steering can kick the ball sideways once the geometry has been confirmed.
+ * It is TIME-terminated (PUSH_HARD_PUSH_MS) - not distance- or stall-supervised
+ * and with no in-pocket pixel confirmation - so reaching the end of the window
+ * counts the current ball as pocketed. */
 #define PUSH_HARD_FORWARD              300   /* final straight impact remains strong */
 #define PUSH_HARD_PUSH_MS              650   /* shorter strong impact: enough to eject, less overshoot */
-#define PUSH_HARD_PUSH_COUNTS          1400  /* documentation / tuning reference */
 #define PUSH_EGRESS_SPEED              120   /* slower retreat to preserve the search area */
-#define PUSH_PUSH_TURN_KP               6   /* in-push heading-hold gain */
-#define PUSH_PUSH_TURN_MAX              90
-#define PUSH_PUSH_DEADBAND_PX           3
-#define PUSH_PUSH_HYSTERESIS_PX         1   /* turn-sign latch until |err| < this */
-#define PUSH_PUSH_MAX_COUNTS          3000   /* over-push guard (car->far edge) */
-#define PUSH_PUSH_STALL_MS             300   /* wedged ball = a MISS, not a fault */
-
-#define PUSH_POCKET_HIT_MARGIN_PX        4   /* bbox shrink/enlarge for success */
-#define PUSH_BALL_NEAR_POCKET_X_PX     12   /* boundary-entry corridor */
-#define PUSH_BALL_NEAR_POCKET_Y_PX     10   /* boundary-entry corridor */
-#define PUSH_POCKET_CONFIRM_FRAMES       3   /* distinct frames inside pocket */
-#define PUSH_BALL_DRIFT_MAX_PX          16   /* |ball.x - pocket.x| above = missed */
-#define PUSH_BALL_LOST_FRAMES            6   /* ball lost outside pocket = missed */
-
-#define PUSH_BACKOUT_SPEED             120   /* reverse after a missed push */
-#define PUSH_BACKOUT_COUNTS            260
 #define PUSH_EGRESS_REVERSE_COUNTS     1000   /* clear the table edge after a success - increased for more visible retreat */
 
 /* Post-egress motion after first ball (red) is pocketed: turn right then move forward
@@ -468,7 +460,6 @@
 #define PUSH_POST_EGRESS_FORWARD_COUNTS 1000 /* forward distance after egress turn (encoder counts) */
 #define PUSH_POST_EGRESS_FORWARD_SPEED 80    /* forward speed after egress turn */
 
-#define BALL_TASK_RETRY_MAX              3   /* pushes per ball before fault */
 #define BALL_TASK_TIMEOUT_MS         180000   /* whole task, both balls */
 #define BALL_VISION_FRESH_MAX_MS       500   /* vision age still "current" in main */
 
@@ -493,18 +484,15 @@
 #define AVOID_SENSOR_STALE_MS           500
 
 #define AVOID_BRAKE_MS                  100
-#define AVOID_REVERSE_SPEED             110
-#define AVOID_REVERSE_COUNTS            300
 #define AVOID_LATERAL_SPEED             120
-#define AVOID_ALIGN_LATERAL_SPEED        65
-#define AVOID_ALIGN_CORRECTION_SPEED     50
 #define AVOID_FORWARD_SPEED             140
 #define AVOID_LEFT_MIN_COUNTS           240
 #define AVOID_LEFT_CLEARANCE_MS          250
 #define AVOID_LEFT_MAX_COUNTS          2600
 #define AVOID_FORWARD_TARGET_COUNTS    1000
+/* The return leg has no absolute cap of its own: obstacle_avoidance.c bounds
+ * it by AVOID_RIGHT_EXTRA_COUNTS on top of the measured outbound distance. */
 #define AVOID_RIGHT_EXTRA_COUNTS        600
-#define AVOID_RIGHT_MAX_COUNTS         3600
 #define AVOID_LINE_CENTERED_MS           30
 #define AVOID_MOTION_TIMEOUT_MS        6000
 #define AVOID_STALL_TIMEOUT_MS          500

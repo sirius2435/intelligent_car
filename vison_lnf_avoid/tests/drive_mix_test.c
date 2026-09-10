@@ -53,10 +53,17 @@ int main(void)
     CHECK(command.left == 140 && command.right == 140 && command.rear == 0);
 
     /* Obstacle-pass forward motion uses a starting kick, then independently
-       raises PWM for a stalled wheel. */
+       raises PWM for a stalled wheel. The kick is the static-friction
+       feed-forward at DRIVE_LATERAL_MIN_ACTIVE_PWM:
+         260 + 140 * (DRIVE_LATERAL_MAX_PWM - 260) / 1000 = 260 + 33 = 293. */
     drive_set_forward_feedback(140, 10, 0, 0, &command);
-    CHECK(command.left == 321 && command.right == 321 && command.rear == 0);
+    CHECK(command.left == 293 && command.right == 293 && command.rear == 0);
+    /* After the first 50 ms sample the running floor drops to
+       DRIVE_FORWARD_MIN_ACTIVE_PWM (180 -> ff 224). The left wheel is already
+       at its 280 cps target so it stays at the feed-forward; the right wheel
+       measured 0 cps and gets the full P+I correction on top (224 + 143). */
     drive_set_forward_feedback(140, 50, -14, 0, &command);
+    CHECK(command.left == 224 && command.right == 367);
     CHECK(command.left < command.right);
     CHECK(command.left >= DRIVE_FORWARD_MIN_ACTIVE_PWM);
     CHECK(command.right > DRIVE_FORWARD_MIN_ACTIVE_PWM);
@@ -78,21 +85,27 @@ int main(void)
     CHECK(command.left < command.right);
     CHECK(command.right > DRIVE_APPROACH_MIN_ACTIVE_PWM);
 
-    /* Entering lateral control applies static-friction feed-forward. */
+    /* Entering lateral control applies static-friction feed-forward from
+       DRIVE_LATERAL_MIN_ACTIVE_PWM: |150| -> 260 + 150*240/1000 = 296,
+       |300| (rear) -> 260 + 300*240/1000 = 332. */
     drive_set_motion(0, 0, 0, NULL);
     drive_set_motion_feedback(0, 300, 0, 10, 0, 0, 0, &command);
-    CHECK(command.left == -326);
-    CHECK(command.right == 326);
-    CHECK(command.rear == -392);
+    CHECK(command.left == -296);
+    CHECK(command.right == 296);
+    CHECK(command.rear == -332);
     CHECK(last_motor_command.left == command.left);
 
     /* After the first 50 ms speed sample, left strafe drops from its starting
-       kick to the lower running range.  A stalled wheel still receives more
-       PWM than wheels already at their target rates. */
+       kick to the lower running range (DRIVE_LEFT_STRAFE_MIN_ACTIVE_PWM).
+       A stalled wheel still receives more PWM than wheels already at their
+       target rates. */
     drive_set_motion_feedback(0, 300, 0, 50, -15, 0, -30, &command);
+    CHECK(command.left == -160);
+    CHECK(command.right == 313);
+    CHECK(command.rear == -220);
     CHECK(abs(command.left) < 260);
     CHECK(command.right > abs(command.left));
-    CHECK(abs(command.rear) < 392);
+    CHECK(abs(command.rear) < 332);
 
     /* The same measured overspeed seen in the real log must be able to drive
        left-strafe PWM below the old hard floor of 260. */
@@ -103,13 +116,16 @@ int main(void)
     CHECK(abs(command.right) < 260);
     CHECK(abs(command.rear) < 260);
 
-    /* Right strafe keeps the same 260 startup kick, then drops to its current
-       160 PWM running floor after the first speed sample. */
+    /* Right strafe keeps the same 260 startup kick (|60| -> 274, |120| -> 288),
+       then drops to its DRIVE_RIGHT_STRAFE_MIN_ACTIVE_PWM running floor after
+       the first speed sample. All three wheels measure 600 cps against far
+       lower targets, so the anti-windup guard refuses to push the integrator
+       further negative and every output clamps to that floor. */
     drive_set_motion(0, 0, 0, NULL);
     drive_set_motion_feedback(0, -120, 0, 10, 0, 0, 0, &command);
-    CHECK(command.left == 286);
-    CHECK(command.right == -286);
-    CHECK(command.rear == 312);
+    CHECK(command.left == 274);
+    CHECK(command.right == -274);
+    CHECK(command.rear == 288);
     drive_set_motion_feedback(0, -120, 0, 50, -30, 30, -30, &command);
     CHECK(abs(command.left) == DRIVE_RIGHT_STRAFE_MIN_ACTIVE_PWM);
     CHECK(abs(command.right) == DRIVE_RIGHT_STRAFE_MIN_ACTIVE_PWM);

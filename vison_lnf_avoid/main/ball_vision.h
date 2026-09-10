@@ -36,19 +36,27 @@ typedef enum {
     BALL_COLOR_COUNT,
 } ball_color_t;
 
+/* Only the four fields below are ever consumed: ball_push.c aims on cx/cy and
+ * uses radius as its distance proxy, and the Wi-Fi viewer publishes cx/cy/
+ * radius. The blob's area and bounding box were dropped because nothing read
+ * them - the shape gates work on ball_vision_component_t inside ball_vision.c,
+ * which is where the bbox actually lives. pocket_blob_t keeps its bbox because
+ * the viewer draws it. */
 typedef struct {
     bool present;
-    ball_color_t color;
     int cx;       /* logical centroid, px */
     int cy;
     int radius;   /* sqrt(area / pi), px: DISTANCE PROXY (bigger = closer) */
-    unsigned area; /* px */
-    int x0, y0, x1, y1; /* logical bounding box, inclusive */
 } ball_blob_t;
 
 typedef struct {
     bool visible;
-    int cx, cy;
+    int cx;
+    /* cy / area are not read by the push controller (it aims on cx alone); they
+     * are asserted by tests/ball_vision_test.c to prove a detected pocket sits
+     * in the far band and is big enough to be real. Free by-products of the
+     * same accumulation pass - keep them. */
+    int cy;
     unsigned area;
     int x0, y0, x1, y1;
 } pocket_blob_t;
@@ -59,15 +67,16 @@ typedef struct {
     unsigned height;
     uint32_t frame_seq;/* stamped by the consumer (camera_vision) */
     ball_blob_t balls[BALL_COLOR_COUNT]; /* [RED] and [BLUE] slots */
-    unsigned ball_count;                  /* number of present slots */
+    unsigned ball_count;   /* present-slot count; asserted by the host tests,
+                            * the controller indexes balls[color] directly */
     pocket_blob_t pockets[2];             /* [0] left (smaller cx), [1] right */
     unsigned pocket_count;
-    /* Diagnostics for on-site tuning (reported by /status): */
-    unsigned table_luma; /* histogram-peak luminance of the tabletop */
+    /* Per-frame classification counters. Cheap by-products of the single
+     * classification pass; red_px / blue_px are reported by the main control
+     * loop log, pocket_px is asserted by tests/ball_vision_test.c. */
     unsigned red_px;     /* pixels classified red */
     unsigned blue_px;    /* pixels classified blue */
     unsigned pocket_px;  /* pixels classified as pocket (dark, band only) */
-    unsigned luma_hist[16]; /* luminance histogram, 16 bins of 16 levels */
 } ball_vision_result_t;
 
 esp_err_t ball_vision_analyze(const uint8_t *rgb,
@@ -76,12 +85,10 @@ esp_err_t ball_vision_analyze(const uint8_t *rgb,
                               size_t stride_bytes,
                               ball_vision_result_t *out);
 
-/* Convenience lookups used by the push controller. */
+/* Convenience lookup used by the push controller. Pockets are read straight
+ * out of result->pockets[side] (0 = left / smaller logical x, 1 = right). */
 const ball_blob_t *ball_vision_find_ball(const ball_vision_result_t *result,
                                          ball_color_t color);
-/* pocket side: 0 = left (smaller logical x), 1 = right. */
-const pocket_blob_t *ball_vision_find_pocket(const ball_vision_result_t *result,
-                                             unsigned side);
 
 #ifdef __cplusplus
 }

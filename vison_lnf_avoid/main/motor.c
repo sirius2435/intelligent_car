@@ -33,7 +33,6 @@ static motor_channel_t s_motors[3] = {
         .pwm_gpio = MOTOR_LEFT_PWM_GPIO,
         .pwm_channel = LEDC_CHANNEL_0,
         .reversed = MOTOR_LEFT_REVERSED,
-        .last_sign = 0,
     },
     {
         .in1 = MOTOR_RIGHT_IN1_GPIO,
@@ -41,7 +40,6 @@ static motor_channel_t s_motors[3] = {
         .pwm_gpio = MOTOR_RIGHT_PWM_GPIO,
         .pwm_channel = LEDC_CHANNEL_1,
         .reversed = MOTOR_RIGHT_REVERSED,
-        .last_sign = 0,
     },
     {
         .in1 = MOTOR_REAR_IN1_GPIO,
@@ -49,7 +47,6 @@ static motor_channel_t s_motors[3] = {
         .pwm_gpio = MOTOR_REAR_PWM_GPIO,
         .pwm_channel = LEDC_CHANNEL_2,
         .reversed = MOTOR_REAR_REVERSED,
-        .last_sign = 0,
     },
 };
 

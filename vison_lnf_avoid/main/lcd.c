@@ -2,11 +2,12 @@
  * Minimal 4-wire SPI driver for the LQ_TFT18SPI V3.3 1.8" TFT.
  *
  * Panel: ST7735S controller, 128x160 pixels, IPS (inversion ON).
- * Wiring (see main/board_config.h): CS=36 SCK=35 SDI/MOSI=45 D/C=21 RST=20.
- *
- * RST shares GPIO20 with the ESP32-S3 USB-Serial-JTAG secondary console;
- * gpio_reset_pin() reclaims the pin for ordinary GPIO use at init. The
- * primary console stays on UART0, so logging is unaffected.
+ * Wiring is defined by the LCD_*_GPIO macros in main/board_config.h and is
+ * currently CS=9 SCK=10 SDI/MOSI=11 D/C=12 RST=38 BLK=-1 (backlight
+ * hardwired on). Read the macros, not this comment, as the source of truth:
+ * GPIO45 and GPIO21 in particular now belong to the camera gimbal servos
+ * (CAMERA_PAN_SERVO_GPIO / CAMERA_TILT_SERVO_GPIO), so the panel must not be
+ * moved back onto them.
  *
  * D/C is driven from the SPI pre-transaction hook: every transaction sets
  * user=0 (command byte) or user=1 (data bytes).
@@ -194,16 +195,6 @@ static esp_err_t lcd_set_window(int x0, int y0, int x1, int y1)
     return lcd_write_cmd(LCD_CMD_RAMWR);
 }
 
-bool lcd_is_ready(void)
-{
-    return s_ready;
-}
-
-int lcd_width(void)
-{
-    return s_width;
-}
-
 int lcd_height(void)
 {
     return s_height;
@@ -297,7 +288,8 @@ void lcd_draw_text(int x, int y, const char *text, int scale,
 
 static esp_err_t lcd_gpio_init(void)
 {
-    /* Reclaim RST from the USB-Serial-JTAG secondary console (GPIO20). */
+    /* Defensive: clear whatever the bootloader or a previous build left on the
+     * reset pin before gpio_config() claims it as an output. */
     gpio_reset_pin((gpio_num_t)LCD_RST_GPIO);
     const gpio_config_t output_config = {
         .pin_bit_mask = (1ULL << LCD_DC_GPIO) | (1ULL << LCD_RST_GPIO)

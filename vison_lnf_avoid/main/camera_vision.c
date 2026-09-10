@@ -83,7 +83,6 @@ static volatile bool s_frame_pending;
 static volatile uint32_t s_pending_bytes;
 static volatile uint32_t s_pending_seq;
 static SemaphoreHandle_t s_frame_sem;
-static TaskHandle_t s_vision_task;
 
 /* Snapshot of the latest raw MJPEG payload for HTTP streaming. The vision
  * task publishes frames into s_stream_buffer; the stream server copies them
@@ -100,7 +99,6 @@ static void publish_connection(bool connected)
     s_connected = connected;
     if (!connected) {
         s_sensor.black_mask = 0U;
-        s_sensor.changed = true;
         s_image_width = 0U;
         s_image_height = 0U;
         s_ball_result.valid = false;
@@ -212,7 +210,6 @@ static void vision_task(void *arg)
         if (decoded != ESP_OK || output.width == 0U || output.height == 0U) {
             ++s_decode_failures;
             s_sensor.black_mask = 0U;   /* no usable frame -> all white */
-            s_sensor.changed = true;
             if (mode == CAMERA_VISION_MODE_PUSH) {
                 s_ball_result.valid = false;
             }
@@ -287,7 +284,7 @@ esp_err_t camera_vision_start(void)
 
     if (xTaskCreatePinnedToCore(vision_task, "vision_proc",
                                 VISION_TASK_STACK_SIZE, NULL,
-                                VISION_TASK_PRIORITY, &s_vision_task,
+                                VISION_TASK_PRIORITY, NULL,
                                 VISION_TASK_CORE) != pdPASS) {
         ESP_LOGE(TAG, "failed to create vision task");
         return ESP_ERR_NO_MEM;
@@ -328,7 +325,7 @@ esp_err_t camera_vision_start(void)
     taskENTER_CRITICAL(&s_status_lock);
     s_started = true;
     taskEXIT_CRITICAL(&s_status_lock);
-    ESP_LOGI(TAG, "UVC started: MJPEG %dx%d @ %d fps, fixed camera",
+    ESP_LOGI(TAG, "UVC started: MJPEG %dx%d @ %d fps",
              CAMERA_FRAME_WIDTH, CAMERA_FRAME_HEIGHT, CAMERA_FRAME_FPS);
     return ESP_OK;
 }

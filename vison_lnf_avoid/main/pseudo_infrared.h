@@ -26,8 +26,8 @@ extern "C" {
  * bit 0 = channel 1 (car right), bit 3 = channel 4 (car left).
  *
  * Block geometry (block size, sample row, thresholds) lives in board_config.h
- * under the PSEUDO_IR_* macros. Semantics match infrared_sensor_sample(): a
- * new mask is published once per decoded frame; between frames the previous
+ * under the PSEUDO_IR_* macros. Sampling semantics: a new mask is published
+ * once per decoded frame; between frames the previous
  * mask is held so the 10 ms control loop sees a stable value. A confirmed
  * finish marker (PSEUDO_IR_FINISH_CONFIRM_FRAMES consecutive frames with all
  * four blocks black) is latched and triggers the controller's all-black stop.
@@ -42,7 +42,7 @@ esp_err_t pseudo_infrared_sample_rgb888(const uint8_t *rgb,
  * a clean all-white state. */
 void pseudo_infrared_reset(void);
 
-/* Same CH4 CH3 CH2 CH1 order as infrared_sensor_format(). */
+/* CH4 CH3 CH2 CH1 order (bit 3 = channel 4 = car left). */
 void pseudo_infrared_format(uint8_t black_mask, char output[5]);
 
 #ifdef __cplusplus

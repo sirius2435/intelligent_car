@@ -169,11 +169,6 @@ esp_err_t encoder_init(void)
     return ESP_OK;
 }
 
-bool encoder_is_enabled(void)
-{
-    return s_enabled;
-}
-
 esp_err_t encoder_get_count(encoder_wheel_t wheel, int *count)
 {
     if (!s_enabled) {
@@ -200,27 +195,4 @@ esp_err_t encoder_get_all(int *left_count, int *right_count, int *rear_count)
     ESP_RETURN_ON_ERROR(encoder_get_count(ENCODER_WHEEL_RIGHT, right_count), TAG,
                         "failed to read right encoder");
     return encoder_get_count(ENCODER_WHEEL_REAR, rear_count);
-}
-
-esp_err_t encoder_clear(encoder_wheel_t wheel)
-{
-    if (!s_enabled) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (!wheel_is_valid(wheel)) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    return pcnt_unit_clear_count(s_encoders[wheel].unit);
-}
-
-esp_err_t encoder_clear_all(void)
-{
-    if (!s_enabled) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    for (size_t i = 0; i < ENCODER_WHEEL_COUNT; ++i) {
-        ESP_RETURN_ON_ERROR(pcnt_unit_clear_count(s_encoders[i].unit), TAG,
-                            "failed to clear encoder counter");
-    }
-    return ESP_OK;
 }

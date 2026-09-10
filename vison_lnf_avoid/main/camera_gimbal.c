@@ -23,8 +23,6 @@ static const char *TAG = "camera_gimbal";
 #define GIMBAL_TILT_ENABLED  (CAMERA_TILT_SERVO_GPIO >= 0)
 
 static bool s_initialized;
-static int s_pan_deg = CAMERA_PAN_SERVO_CENTER_DEG;
-static int s_tilt_deg = CAMERA_TILT_SERVO_CENTER_DEG;
 
 static int clamp_angle(int angle, int minimum, int maximum)
 {
@@ -105,17 +103,13 @@ static esp_err_t configure_channel(int gpio, ledc_channel_t channel)
 static esp_err_t apply_axis(ledc_channel_t channel,
                             int angle_deg,
                             int minimum,
-                            int maximum,
-                            int *stored)
+                            int maximum)
 {
     const int clamped = clamp_angle(angle_deg, minimum, maximum);
     const uint32_t duty = pulse_to_duty(angle_to_pulse_us(clamped));
     ESP_RETURN_ON_ERROR(ledc_set_duty(LEDC_LOW_SPEED_MODE, channel, duty),
                         TAG, "failed to set servo duty");
-    ESP_RETURN_ON_ERROR(ledc_update_duty(LEDC_LOW_SPEED_MODE, channel),
-                        TAG, "failed to apply servo duty");
-    *stored = clamped;
-    return ESP_OK;
+    return ledc_update_duty(LEDC_LOW_SPEED_MODE, channel);
 }
 
 esp_err_t camera_gimbal_init(void)
@@ -186,8 +180,7 @@ esp_err_t camera_gimbal_set_pan(int angle_deg)
         return ESP_OK;
     }
     return apply_axis(GIMBAL_PAN_CHANNEL, angle_deg,
-                      CAMERA_PAN_SERVO_MIN_DEG, CAMERA_PAN_SERVO_MAX_DEG,
-                      &s_pan_deg);
+                      CAMERA_PAN_SERVO_MIN_DEG, CAMERA_PAN_SERVO_MAX_DEG);
 }
 
 esp_err_t camera_gimbal_set_tilt(int angle_deg)
@@ -199,8 +192,7 @@ esp_err_t camera_gimbal_set_tilt(int angle_deg)
         return ESP_OK;
     }
     return apply_axis(GIMBAL_TILT_CHANNEL, angle_deg,
-                      CAMERA_TILT_SERVO_MIN_DEG, CAMERA_TILT_SERVO_MAX_DEG,
-                      &s_tilt_deg);
+                      CAMERA_TILT_SERVO_MIN_DEG, CAMERA_TILT_SERVO_MAX_DEG);
 }
 
 esp_err_t camera_gimbal_set(int pan_deg, int tilt_deg)
@@ -214,14 +206,4 @@ esp_err_t camera_gimbal_center(void)
 {
     return camera_gimbal_set(CAMERA_PAN_SERVO_CENTER_DEG,
                              CAMERA_TILT_SERVO_CENTER_DEG);
-}
-
-void camera_gimbal_get_position(int *pan_deg, int *tilt_deg)
-{
-    if (pan_deg != NULL) {
-        *pan_deg = s_pan_deg;
-    }
-    if (tilt_deg != NULL) {
-        *tilt_deg = s_tilt_deg;
-    }
 }

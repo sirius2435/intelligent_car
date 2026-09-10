@@ -18,8 +18,9 @@ typedef enum {
 typedef struct {
     ultrasonic_reading_status_t status;
     uint32_t distance_mm;
+    /* Monotonic publish counter: obstacle_avoidance.c compares it against the
+     * last value it consumed to tell a fresh reading from a held-over one. */
     uint32_t sequence;
-    int64_t timestamp_us;
 } ultrasonic_reading_t;
 
 esp_err_t ultrasonic_init(void);

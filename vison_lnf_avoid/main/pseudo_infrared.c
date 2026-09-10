@@ -45,7 +45,6 @@ esp_err_t pseudo_infrared_sample_rgb888(const uint8_t *rgb,
     if (state == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    state->changed = false;
     state->finish_detected = s_finish_latched;
     if (rgb == NULL || width < 4U || height < 4U ||
         stride_bytes < (size_t)width * 3U) {
@@ -125,10 +124,7 @@ esp_err_t pseudo_infrared_sample_rgb888(const uint8_t *rgb,
         mask = IR_ALL_BLACK_MASK;
     }
 
-    if (mask != s_stable_mask) {
-        state->changed = true;
-        s_stable_mask = mask;
-    }
+    s_stable_mask = mask;
     state->black_mask = s_stable_mask;
     state->finish_detected = s_finish_latched;
     return ESP_OK;

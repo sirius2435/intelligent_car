@@ -177,7 +177,10 @@ void app_main(void)
             locked = true;
         }
 
-        drive_wheel_command_t wheels = {0};
+        /* Every drive_* call takes an optional out-parameter reporting the
+         * per-wheel PWM it actually applied. That is test-only instrumentation
+         * (tests/drive_mix_test.c); the control loop never reads it back, so
+         * pass NULL. */
         esp_err_t drive_result = ESP_OK;
 
         if (!locked && phase == RUN_PHASE_LINE) {
@@ -239,20 +242,20 @@ void app_main(void)
                 drive_result = drive_stop();
             } else if (push_start_pending) {
                 /* Zero command this tick, then switch phase below. */
-                drive_result = drive_set_motion(0, 0, 0, &wheels);
+                drive_result = drive_set_motion(0, 0, 0, NULL);
             } else if (avoid.active &&
                        avoid.state == AVOIDANCE_FORWARD_PASS) {
                 drive_result = drive_set_forward_feedback(
-                    forward, elapsed_ms, left_count, right_count, &wheels);
+                    forward, elapsed_ms, left_count, right_count, NULL);
             } else if (!avoid.active && avoid.slow_approach &&
                        forward > 0) {
                 drive_result = drive_set_approach_feedback(
                     forward, turn, elapsed_ms, left_count, right_count,
-                    &wheels);
+                    NULL);
             } else {
                 drive_result = drive_set_motion_feedback(
                     forward, lateral, turn, elapsed_ms,
-                    left_count, right_count, rear_count, &wheels);
+                    left_count, right_count, rear_count, NULL);
             }
             require_ok("drive command", drive_result);
 
@@ -267,7 +270,7 @@ void app_main(void)
                  * time as motion time; otherwise the 650 ms startup drive is
                  * consumed before the wheels ever turn. */
                 previous_ticks = xTaskGetTickCount();
-                wake_time = xTaskGetTickCount();
+                wake_time = previous_ticks;
                 log_elapsed_ms = 0;
             }
 
@@ -305,10 +308,10 @@ void app_main(void)
                 left_count, right_count, rear_count);
 
             if (push_result.state_changed) {
-                ESP_LOGI(TAG, "push %s -> %s (attempt=%u retry=%u)",
+                ESP_LOGI(TAG, "push %s -> %s (attempt=%u)",
                          ball_push_state_name(last_push_state),
                          ball_push_state_name(push_result.state),
-                         push_result.attempt, push_result.retry);
+                         push_result.attempt);
                 last_push_state = push_result.state;
             }
             if (push_result.state == BALL_PUSH_DONE && !done_logged) {
@@ -317,8 +320,8 @@ void app_main(void)
             } else if (push_result.state == BALL_PUSH_FAULT_STOP &&
                        !fault_logged) {
                 fault_logged = true;
-                ESP_LOGE(TAG, "pocket-push task FAULT (attempt=%u retry=%u)",
-                         push_result.attempt, push_result.retry);
+                ESP_LOGE(TAG, "pocket-push task FAULT (attempt=%u)",
+                         push_result.attempt);
             }
             if (push_result.state == BALL_PUSH_DONE ||
                 push_result.state == BALL_PUSH_FAULT_STOP) {
@@ -332,19 +335,19 @@ void app_main(void)
                 case BALL_DRIVE_OPEN:
                     drive_result = drive_set_motion(
                         push_result.forward, push_result.lateral,
-                        push_result.turn, &wheels);
+                        push_result.turn, NULL);
                     break;
                 case BALL_DRIVE_LATERAL:
                     /* Same proven lateral path used by obstacle avoidance. */
                     drive_result = drive_set_motion_feedback(
                         push_result.forward, push_result.lateral,
                         push_result.turn, elapsed_ms,
-                        left_count, right_count, rear_count, &wheels);
+                        left_count, right_count, rear_count, NULL);
                     break;
                 case BALL_DRIVE_APPROACH:
                     drive_result = drive_set_approach_feedback(
                         push_result.forward, push_result.turn, elapsed_ms,
-                        left_count, right_count, &wheels);
+                        left_count, right_count, NULL);
                     break;
                 default:
                     drive_result = drive_stop();
@@ -356,12 +359,12 @@ void app_main(void)
             log_elapsed_ms += elapsed_ms;
             if (log_elapsed_ms >= LINE_LOG_PERIOD_MS) {
                 ESP_LOGI(TAG,
-                         "push=%s attempt=%u retry=%u motion=[%d,%d,%d] "
+                         "push=%s attempt=%u motion=[%d,%d,%d] "
                          "drive=%s ball=[red=%d blue=%d] px=[r=%u b=%u] pockets=%u "
                          "cam=[%ux%u age=%lldms frames=%u drop=%u dec=%u] "
                          "enc=[%d,%d,%d]",
                          ball_push_state_name(push_result.state),
-                         push_result.attempt, push_result.retry,
+                         push_result.attempt,
                          push_result.forward, push_result.lateral,
                          push_result.turn,
                          ball_push_drive_mode_name(push_result.drive_mode),

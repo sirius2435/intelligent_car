@@ -82,7 +82,6 @@ static void publish_reading(ultrasonic_reading_status_t status,
     s_latest.status = status;
     s_latest.distance_mm = distance_mm;
     ++s_latest.sequence;
-    s_latest.timestamp_us = esp_timer_get_time();
     taskEXIT_CRITICAL(&s_reading_lock);
 }
 

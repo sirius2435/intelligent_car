@@ -42,12 +42,15 @@ typedef struct {
     obstacle_avoidance_state_t state;
     int forward;
     int lateral;
+    /* Structurally always 0: the manoeuvre is brake + strafe + straight pass,
+     * it never rotates. Kept so main.c can copy the whole motion triple
+     * uniformly, and tests/obstacle_avoidance_test.c asserts that the fault
+     * result really zeroes it. */
     int turn;
     int tracking_forward_limit;
     bool active;
     bool slow_approach;
     bool just_completed;
-    bool state_changed;
 } obstacle_avoidance_result_t;
 
 void obstacle_avoidance_init(obstacle_avoidance_controller_t *controller);

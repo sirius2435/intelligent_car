@@ -1,12 +1,17 @@
 /* Deterministic ball-push controller.
  *
  * Required physical sequence:
- *   START_FORWARD -> FIND_BALL/SCAN -> APPROACH (STRAFE, then FORWARD)
- *   -> ALIGN (ROTATE pocket, STRAFE ball to pocket x, re-check rotation)
- *   -> HARD PUSH -> REVERSE -> next ball.
+ *   START_FORWARD -> FIND_BALL/SCAN -> APPROACH (phase 0 STRAFE to centre,
+ *   phase 1 far-field heading correction + optional FAR_SPRINT, phase 2
+ *   straight approach) -> ALIGN (STRAFE the ball onto the pocket's column,
+ *   then hold it centred for a confirm window) -> HARD PUSH -> EGRESS ->
+ *   POST_EGRESS_TURN/FORWARD -> next ball.
  *
- * The important rule is that ALIGN never drives forward.  The ball is only
- * hit after the target edge and the ball have been geometrically aligned.
+ * Two rules matter:
+ *  - ALIGN never drives forward. The ball is only hit after the pocket column
+ *    and the ball have been geometrically aligned.
+ *  - ALIGN never rotates either. Heading is fixed earlier, while the ball is
+ *    still far away; rotating next to the ball rolls it out of view.
  */
 #include "ball_push.h"
 #include <limits.h>
@@ -33,10 +38,10 @@ static const pocket_blob_t *task_pocket(const ball_vision_result_t *v, unsigned 
     return &v->pockets[side];
 }
 
-static void publish(const ball_push_controller_t *c, bool ball, bool pocket) {
+static void publish(const ball_push_controller_t *c, bool pocket) {
     if (!c) return;
-    s_status.state=c->state; s_status.attempt=c->attempt; s_status.retry=c->retry;
-    s_status.target_ball_visible=ball; s_status.target_pocket_visible=pocket;
+    s_status.state=c->state; s_status.attempt=c->attempt;
+    s_status.target_pocket_visible=pocket;
     s_status.red_pocketed=c->red_pocketed; s_status.blue_pocketed=c->blue_pocketed;
 }
 void ball_push_get_status(ball_push_status_t *status) { if (status) *status=s_status; }
@@ -47,9 +52,7 @@ static void reset_stage(ball_push_controller_t *c, ball_push_state_t state,
     c->stage_start_l=l; c->stage_start_r=r; c->stage_progress=0;
     c->stage_target=target; c->stage_last_motion=0; c->stage_stall_ms=0;
     c->align_ok_ms=0; c->approach_phase=0; c->approach_forward_ms=0; c->approach_strafe_ms=0;
-    c->pocket_hit_frames=0; c->ball_lost_frames=0;
-    c->last_ball_near_pocket=false; c->last_ball_approaching_pocket=false;
-    c->push_turn_latched=false; c->push_turn_sign=0;
+    c->ball_lost_frames=0;
     if (state==BALL_PUSH_SCAN) { c->scan_leg=0; c->scan_direction=1; }
 }
 
@@ -65,30 +68,42 @@ static bool tick_counts(ball_push_controller_t *c, uint32_t ms, int l, int r) {
 
 static ball_push_result_t zr(ball_push_controller_t *c, bool changed) {
     return (ball_push_result_t){.state=c->state,.forward=0,.lateral=0,.turn=0,
-        .active=false,.state_changed=changed,.attempt=c->attempt,.retry=c->retry,
+        .active=false,.state_changed=changed,.attempt=c->attempt,
         .drive_mode=BALL_DRIVE_OPEN};
+}
+
+/* Terminal states (DONE / FAULT_STOP) return early and therefore bypass the
+ * publish() at the bottom of the update loop. They MUST publish here: main.c
+ * latches `locked` on the same tick and never calls ball_push_update() again,
+ * so a terminal state that is not published here would leave the Wi-Fi page
+ * showing the last running state forever. */
+static ball_push_result_t terminal(ball_push_controller_t *c, bool pocket) {
+    publish(c, pocket);
+    return zr(c, true);
 }
 
 void ball_push_init(ball_push_controller_t *c) {
     if (!c) return;
     *c=(ball_push_controller_t){.state=BALL_PUSH_START_FORWARD,.attempt=0,
         .scan_direction=1,.red_pocketed=false,.blue_pocketed=false};
-    publish(c,false,false);
+    publish(c,false);
 }
 
 ball_push_result_t ball_push_update(ball_push_controller_t *c,
     const ball_vision_result_t *v, bool fresh, uint32_t ms,
     int l, int r, int rear) {
     (void)rear;
+    /* Guard FIRST: every line below dereferences c, so the NULL check has to
+     * run before the new_frame test rather than after it. */
+    if (!c) return (ball_push_result_t){.state=BALL_PUSH_FAULT_STOP,.state_changed=true};
     static const ball_vision_result_t empty={0};
     const ball_vision_result_t *vr=v ? v : &empty;
     const bool valid=fresh && v && vr->valid;
     const bool new_frame=valid && vr->frame_seq && vr->frame_seq!=c->last_vision_seq;
-    if (!c) return (ball_push_result_t){.state=BALL_PUSH_FAULT_STOP,.state_changed=true};
     if (c->state==BALL_PUSH_DONE || c->state==BALL_PUSH_FAULT_STOP) return zr(c,false);
 
     c->task_ms=sat_add(c->task_ms,ms);
-    if (c->task_ms>=BALL_TASK_TIMEOUT_MS) { c->state=BALL_PUSH_FAULT_STOP; publish(c,false,false); return zr(c,true); }
+    if (c->task_ms>=BALL_TASK_TIMEOUT_MS) { c->state=BALL_PUSH_FAULT_STOP; return terminal(c,false); }
 
     const ball_color_t color=task_color(c->attempt);
     const unsigned side=task_side(c->attempt);
@@ -98,8 +113,6 @@ ball_push_result_t ball_push_update(ball_push_controller_t *c,
 
     if (new_frame) {
         c->last_vision_seq=vr->frame_seq;
-        if (ball) { c->last_ball_cx=ball->cx; c->last_ball_cy=ball->cy; c->last_ball_radius=ball->radius; c->ball_present_last=true; }
-        else c->ball_present_last=false;
     }
 
     for (unsigned guard=0; guard<12; ++guard) {
@@ -189,8 +202,6 @@ ball_push_result_t ball_push_update(ball_push_controller_t *c,
                                 PUSH_FAR_SPRINT_CY_SCALE;
                             if (counts < PUSH_FAR_SPRINT_MIN_COUNTS) counts = PUSH_FAR_SPRINT_MIN_COUNTS;
                             if (counts > PUSH_FAR_SPRINT_MAX_COUNTS) counts = PUSH_FAR_SPRINT_MAX_COUNTS;
-                            c->far_sprint_ball_cx = ball->cx;
-                            c->far_sprint_ball_cy = ball->cy;
                             reset_stage(c, BALL_PUSH_FAR_SPRINT, counts, l, r);
                             out.state_changed = true;
                             break;
@@ -214,15 +225,12 @@ ball_push_result_t ball_push_update(ball_push_controller_t *c,
             }
             break;
 
-        case BALL_PUSH_CREEP_OFF_FINISH:
-            reset_stage(c,BALL_PUSH_APPROACH_BALL,-1,l,r); out.state_changed=true; break;
-
         case BALL_PUSH_SCAN: {
             if (ball) { reset_stage(c,BALL_PUSH_APPROACH_BALL,-1,l,r); out.state_changed=true; break; }
             bool stalled=tick_counts(c,ms,l,r);
-            if (stalled) { c->state=BALL_PUSH_FAULT_STOP; return zr(c,true); }
+            if (stalled) { c->state=BALL_PUSH_FAULT_STOP; return terminal(c,pocket!=NULL); }
             if (c->stage_progress>=c->stage_target) {
-                if (++c->scan_leg>=PUSH_SCAN_MAX_LEGS) { c->state=BALL_PUSH_FAULT_STOP; return zr(c,true); }
+                if (++c->scan_leg>=PUSH_SCAN_MAX_LEGS) { c->state=BALL_PUSH_FAULT_STOP; return terminal(c,pocket!=NULL); }
                 c->scan_direction=-c->scan_direction; c->stage_start_l=l; c->stage_start_r=r;
                 c->stage_progress=0; c->stage_last_motion=0; c->stage_stall_ms=0;
                 c->stage_target=(c->scan_leg&1)?PUSH_SCAN_SECOND_COUNTS:PUSH_SCAN_FIRST_COUNTS;
@@ -265,7 +273,7 @@ ball_push_result_t ball_push_update(ball_push_controller_t *c,
 
         case BALL_PUSH_BACKOFF: {
             bool stalled=tick_counts(c,ms,l,r);
-            if (stalled) { c->state=BALL_PUSH_FAULT_STOP; return zr(c,true); }
+            if (stalled) { c->state=BALL_PUSH_FAULT_STOP; return terminal(c,pocket!=NULL); }
             out.forward=-PUSH_BACKOFF_SPEED; out.active=true; out.drive_mode=BALL_DRIVE_OPEN;
             if (c->stage_progress>=PUSH_BACKOFF_COUNTS) { reset_stage(c,BALL_PUSH_ALIGN,-1,l,r); out.state_changed=true; }
             break; }
@@ -278,8 +286,11 @@ ball_push_result_t ball_push_update(ball_push_controller_t *c,
              * the near-field noise this state exists to avoid. */
             bool stalled=tick_counts(c,ms,l,r);
             if (stalled) {
-                /* Wedged on the ball or the table edge: treat as a miss and
-                 * back out for a retry, exactly like a stalled HARD_PUSH. */
+                /* Wedged on the ball or the table edge: the sprint never reached
+                 * its distance target, so treat it as a miss. BACKOUT is the
+                 * decision-only state that sends us back to FIND_BALL. This is
+                 * the ONLY stall-supervised pushing state - HARD_PUSH itself is
+                 * purely time-terminated and cannot detect a wedge. */
                 reset_stage(c,BALL_PUSH_BACKOUT,-1,l,r);
                 out.state_changed=true;
                 break;
@@ -302,18 +313,19 @@ ball_push_result_t ball_push_update(ball_push_controller_t *c,
             out.forward=PUSH_HARD_FORWARD; out.active=true; out.drive_mode=BALL_DRIVE_OPEN;
             if (c->stage_ms>=PUSH_HARD_PUSH_MS) {
                 if (c->attempt==0) c->red_pocketed=true; else c->blue_pocketed=true;
-                if (c->attempt+1>=2) { c->state=BALL_PUSH_DONE; return zr(c,true); }
-                ++c->attempt; c->retry=0; reset_stage(c,BALL_PUSH_EGRESS,PUSH_EGRESS_REVERSE_COUNTS,l,r); out.state_changed=true;
+                if (c->attempt+1>=2) { c->state=BALL_PUSH_DONE; return terminal(c,pocket!=NULL); }
+                ++c->attempt; reset_stage(c,BALL_PUSH_EGRESS,PUSH_EGRESS_REVERSE_COUNTS,l,r); out.state_changed=true;
             }
             break;
 
         case BALL_PUSH_EGRESS: {
             bool stalled=tick_counts(c,ms,l,r);
-            if (stalled) { c->state=BALL_PUSH_FAULT_STOP; return zr(c,true); }
+            if (stalled) { c->state=BALL_PUSH_FAULT_STOP; return terminal(c,pocket!=NULL); }
             out.forward=-PUSH_EGRESS_SPEED; out.active=true; out.drive_mode=BALL_DRIVE_APPROACH;
             if (c->stage_progress>=c->stage_target) {
-                /* After first ball (red) pocketed, turn right 50 deg then move forward
-                 * to get better view for finding the second ball (blue). */
+                /* After the first ball (red) is pocketed, turn right by
+                 * PUSH_POST_EGRESS_TURN_DEG and then move forward, to get a
+                 * better view for finding the second ball (blue). */
                 const int64_t turn_counts = (int64_t)PUSH_SCAN_30_DEG_COUNTS * PUSH_POST_EGRESS_TURN_DEG / 30;
                 reset_stage(c,BALL_PUSH_POST_EGRESS_TURN,turn_counts,l,r);
                 out.state_changed=true;
@@ -322,7 +334,7 @@ ball_push_result_t ball_push_update(ball_push_controller_t *c,
 
         case BALL_PUSH_POST_EGRESS_TURN: {
             bool stalled=tick_counts(c,ms,l,r);
-            if (stalled) { c->state=BALL_PUSH_FAULT_STOP; return zr(c,true); }
+            if (stalled) { c->state=BALL_PUSH_FAULT_STOP; return terminal(c,pocket!=NULL); }
             out.turn=PUSH_POST_EGRESS_TURN_SPEED; out.active=true; out.drive_mode=BALL_DRIVE_OPEN;
             if (c->stage_progress>=c->stage_target) {
                 reset_stage(c,BALL_PUSH_POST_EGRESS_FORWARD,PUSH_POST_EGRESS_FORWARD_COUNTS,l,r);
@@ -332,16 +344,18 @@ ball_push_result_t ball_push_update(ball_push_controller_t *c,
 
         case BALL_PUSH_POST_EGRESS_FORWARD: {
             bool stalled=tick_counts(c,ms,l,r);
-            if (stalled) { c->state=BALL_PUSH_FAULT_STOP; return zr(c,true); }
+            if (stalled) { c->state=BALL_PUSH_FAULT_STOP; return terminal(c,pocket!=NULL); }
             out.forward=PUSH_POST_EGRESS_FORWARD_SPEED; out.active=true; out.drive_mode=BALL_DRIVE_APPROACH;
             if (c->stage_progress>=c->stage_target) { reset_stage(c,BALL_PUSH_FIND_BALL,-1,l,r); out.state_changed=true; }
             break; }
 
         case BALL_PUSH_BACKOUT:
-            /* BACKOUT is reached either after a stalled FAR_SPRINT (ball not
-             * pocketed, must retry) or as the legacy post-miss path. If the
-             * current attempt's ball was NOT yet pocketed, go back and find
-             * it again instead of advancing to the egress/next-ball flow. */
+            /* Decision-only state: it commands no motion itself, it just picks
+             * the next state within the same control tick. Reached when a
+             * FAR_SPRINT wedged (stall), so the ball was NOT pocketed and must
+             * be found again - the else branch only covers the case where the
+             * current attempt's ball was already pocketed. This state is
+             * therefore reachable only while PUSH_FAR_SPRINT_ENABLE is 1. */
             if ((c->attempt==0 && !c->red_pocketed) ||
                 (c->attempt==1 && !c->blue_pocketed)) {
                 reset_stage(c,BALL_PUSH_FIND_BALL,-1,l,r);
@@ -353,20 +367,20 @@ ball_push_result_t ball_push_update(ball_push_controller_t *c,
         case BALL_PUSH_FAULT_STOP:
             return zr(c,false);
         default:
-            c->state=BALL_PUSH_FAULT_STOP; return zr(c,true);
+            c->state=BALL_PUSH_FAULT_STOP; return terminal(c,pocket!=NULL);
         }
-        out.state=c->state; out.attempt=c->attempt; out.retry=c->retry;
+        out.state=c->state; out.attempt=c->attempt;
         if (c->state==BALL_PUSH_START_FORWARD || c->state==BALL_PUSH_APPROACH_BALL ||
             c->state==BALL_PUSH_ALIGN || c->state==BALL_PUSH_PUSH || c->state==BALL_PUSH_SCAN ||
             c->state==BALL_PUSH_FIND_BALL || c->state==BALL_PUSH_BACKOFF || c->state==BALL_PUSH_EGRESS ||
             c->state==BALL_PUSH_FAR_SPRINT ||
             c->state==BALL_PUSH_POST_EGRESS_TURN || c->state==BALL_PUSH_POST_EGRESS_FORWARD) {
-            publish(c,ball!=NULL,pocket!=NULL);
+            publish(c,pocket!=NULL);
         }
         if (out.state_changed) { /* run the new state in the same control tick */ continue; }
         return out;
     }
-    c->state=BALL_PUSH_FAULT_STOP; return zr(c,true);
+    c->state=BALL_PUSH_FAULT_STOP; return terminal(c,pocket!=NULL);
 }
 
 const char *ball_push_state_name(ball_push_state_t s) {
@@ -374,7 +388,6 @@ const char *ball_push_state_name(ball_push_state_t s) {
     case BALL_PUSH_START_FORWARD:return "START_FORWARD";
     case BALL_PUSH_FIND_BALL:return "FIND_BALL";
     case BALL_PUSH_APPROACH_BALL:return "APPROACH_BALL";
-    case BALL_PUSH_CREEP_OFF_FINISH:return "CREEP";
     case BALL_PUSH_SCAN:return "SCAN";
     case BALL_PUSH_ALIGN:return "ALIGN";
     case BALL_PUSH_BACKOFF:return "BACKOFF";

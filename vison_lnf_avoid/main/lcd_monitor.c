@@ -32,12 +32,10 @@
 #define LCD_MONITOR_ROWS       4
 #define LCD_MONITOR_VALUE_COLS 9 /* " 1234 RPM" fits scale 2 on 128 px */
 
-typedef struct {
-    const char *label;
-} monitor_row_spec_t;
-
-static const monitor_row_spec_t s_rows[LCD_MONITOR_ROWS] = {
-    { "LEFT" }, { "RIGHT" }, { "REAR" }, { "DIST" },
+/* Row labels, top to bottom: the three wheel speeds then the filtered
+ * distance. Row LCD_MONITOR_ROWS-1 is the distance row, not a wheel. */
+static const char *const s_rows[LCD_MONITOR_ROWS] = {
+    "LEFT", "RIGHT", "REAR", "DIST",
 };
 
 static bool s_started;
@@ -83,7 +81,7 @@ static void lcd_monitor_draw_static_frame(void)
     for (int i = 0; i < LCD_MONITOR_ROWS; ++i) {
         const int label_y = 12 + i * 32;
         if (label_y + 8 <= lcd_height()) {
-            lcd_draw_text(0, label_y, s_rows[i].label, 1,
+            lcd_draw_text(0, label_y, s_rows[i], 1,
                           LCD_COLOR_WHITE, LCD_COLOR_BLACK);
         }
     }
@@ -159,7 +157,7 @@ static void lcd_monitor_task(void *argument)
             } else {
                 snprintf(text, sizeof(text), "--.- CM");
             }
-            if (!rendered_valid[ENCODER_WHEEL_REAR + 1] ||
+            if (!rendered_valid[LCD_MONITOR_ROWS - 1] ||
                 strcmp(text, rendered[LCD_MONITOR_ROWS - 1]) != 0) {
                 const int value_y = 12 + 3 * 32 + 10;
                 if (value_y + 16 <= lcd_height()) {
